@@ -133,19 +133,19 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
       if (colonyError) throw colonyError
       setColony(colonyData)
 
-      // ✅ Obtener estudiantes directamente desde la tabla students
+      // ✅ Obtener estudiantes del período actual
       const { data: studentsData, error: studentsError } = await supabase
         .from('students')
         .select('*')
         .eq('colony_id', colonyId)
+        .eq('period_number', 1) // ✅ Filtrar por período 1
         .order('created_at', { ascending: false })
 
       if (studentsError) throw studentsError
 
-      // ✅ Formatear estudiantes con la nueva estructura
       const formattedStudents = studentsData.map(student => ({
         ...student,
-        registration_date: student.created_at // Usar created_at como fecha de registro
+        registration_date: student.created_at
       }))
 
       setStudents(formattedStudents)
@@ -280,7 +280,7 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
     }
   }
 
-  // ✅ FUNCIÓN: Generar reporte automáticamente
+  // ✅ FUNCIÓN: Generar reporte automáticamente (CORREGIDA)
   const generateReport = async () => {
     try {
       console.log('🔍 Generando reporte automáticamente para colonia:', colonyId)
@@ -289,26 +289,27 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
         throw new Error('No hay información de la colonia')
       }
 
-      // ✅ OBTENER: Período de la colonia desde la base de datos
-      const { data: colonyData, error: colonyError } = await supabase
-        .from('colonies')
+      // ✅ CORRECCIÓN: Obtener el período desde colony_periods
+      const { data: periodData, error: periodError } = await supabase
+        .from('colony_periods')
         .select('periodo_desde, periodo_hasta')
-        .eq('id', colonyId)
+        .eq('colony_id', colonyId)
+        .eq('period_number', 1) // ✅ Obtener el período inicial
         .single()
 
-      if (colonyError) {
-        console.error('Error obteniendo período:', colonyError)
+      if (periodError) {
+        console.error('Error obteniendo período desde colony_periods:', periodError)
         throw new Error('No se pudo obtener el período de la colonia')
       }
 
-      if (!colonyData?.periodo_desde || !colonyData?.periodo_hasta) {
+      if (!periodData?.periodo_desde || !periodData?.periodo_hasta) {
         throw new Error('La colonia no tiene período configurado')
       }
 
-      console.log('📅 Período de la colonia:', colonyData.periodo_desde, 'a', colonyData.periodo_hasta)
+      console.log('📅 Período de la colonia:', periodData.periodo_desde, 'a', periodData.periodo_hasta)
 
       // ✅ GENERAR: Todas las fechas del período
-      const dates = generateDateRange(colonyData.periodo_desde, colonyData.periodo_hasta)
+      const dates = generateDateRange(periodData.periodo_desde, periodData.periodo_hasta)
       console.log('📊 Fechas generadas:', dates)
       
       // ✅ GUARDAR: Las fechas del período en el estado
@@ -323,33 +324,34 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
     }
   }
 
-  // ✅ FUNCIÓN: Generar reporte COMPLETO (período + asistencia real)
+  // ✅ FUNCIÓN: Generar reporte COMPLETO (período + asistencia real) - CORREGIDA
   const generateReportWithDates = async (dates: string[]) => {
     try {
       console.log('📊 Generando reporte COMPLETO para colonia:', colonyId)
       
-      // ✅ PASO 1: Obtener el período de la colonia
-      const { data: colonyData, error: colonyError } = await supabase
-        .from('colonies')
+      // ✅ PASO 1: Obtener el período de la colonia desde colony_periods
+      const { data: periodData, error: periodError } = await supabase
+        .from('colony_periods')
         .select('periodo_desde, periodo_hasta')
-        .eq('id', colonyId)
+        .eq('colony_id', colonyId)
+        .eq('period_number', 1)
         .single()
 
-      if (colonyError) {
-        console.error('❌ Error obteniendo período:', colonyError)
+      if (periodError) {
+        console.error('❌ Error obteniendo período desde colony_periods:', periodError)
         throw new Error('No se pudo obtener el período de la colonia')
       }
 
-      if (!colonyData?.periodo_desde || !colonyData?.periodo_hasta) {
+      if (!periodData?.periodo_desde || !periodData?.periodo_hasta) {
         throw new Error('La colonia no tiene período configurado')
       }
 
       console.log('📅 PERÍODO DE LA COLONIA:')
-      console.log('  - Desde:', colonyData.periodo_desde)
-      console.log('  - Hasta:', colonyData.periodo_hasta)
+      console.log('  - Desde:', periodData.periodo_desde)
+      console.log('  - Hasta:', periodData.periodo_hasta)
 
       // ✅ PASO 2: Generar TODAS las fechas del período
-      const allPeriodDates = generateDateRange(colonyData.periodo_desde, colonyData.periodo_hasta)
+      const allPeriodDates = generateDateRange(periodData.periodo_desde, periodData.periodo_hasta)
       console.log('📅 FECHAS DEL PERÍODO COMPLETO:', allPeriodDates)
       console.log('  - Total días:', allPeriodDates.length)
       
@@ -496,30 +498,37 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
   }
 
   const formatWeekday = (dateString: string) => {
-    // ✅ CORRECCIÓN: Mostrar día de la semana continuo
-    console.log('📅 formatWeekday recibió:', dateString)
-    
-    // ✅ VERIFICAR: Si la fecha ya está en formato correcto
-    if (dateString.includes('/')) {
-      // ✅ FECHA EN FORMATO DD/MM/YYYY
-      const [day, month, year] = dateString.split('/')
-      const date = new Date(`${year}-${month}-${day}`)
+    try {
+      console.log('📅 formatWeekday recibió:', dateString)
       
-      // ✅ DÍAS DE LA SEMANA EN ESPAÑOL
-      const weekdays = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb']
-      return weekdays[date.getDay()]
-    }
-    
-    // ✅ FECHA EN FORMATO YYYY-MM-DD
-    if (dateString.includes('-')) {
-      const date = new Date(dateString)
+      // ✅ CORRECCIÓN: Procesar fechas sin conversiones de zona horaria
+      if (dateString.includes('/')) {
+        // ✅ FECHA EN FORMATO DD/MM/YYYY
+        const [day, month, year] = dateString.split('/')
+        const dayNum = parseInt(day, 10)
+        const monthNum = parseInt(month, 10)
+        const yearNum = parseInt(year, 10)
+        
+        // ✅ USAR: Función manual para evitar problemas de zona horaria
+        return getDayOfWeek(dayNum, monthNum, yearNum)
+      }
       
-      // ✅ DÍAS DE LA SEMANA EN ESPAÑOL
-      const weekdays = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb']
-      return weekdays[date.getDay()]
+      // ✅ FECHA EN FORMATO YYYY-MM-DD
+      if (dateString.includes('-')) {
+        const [year, month, day] = dateString.split('-')
+        const dayNum = parseInt(day, 10)
+        const monthNum = parseInt(month, 10)
+        const yearNum = parseInt(year, 10)
+        
+        // ✅ USAR: Función manual para evitar problemas de zona horaria
+        return getDayOfWeek(dayNum, monthNum, yearNum)
+      }
+      
+      return dateString
+    } catch (error) {
+      console.error('❌ Error en formatWeekday:', error)
+      return dateString
     }
-    
-    return dateString
   }
 
   const formatDate = (dateString: string) => {
@@ -544,26 +553,34 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
     }
   }
 
-  // ✅ NUEVA FUNCIÓN: Calcular día de la semana manualmente
+  // ✅ CORREGIDA FUNCIÓN: Calcular día de la semana manualmente
   const getDayOfWeek = (day: number, month: number, year: number): string => {
-    // ✅ ALGORITMO: Zeller's congruence para calcular día de la semana
-    if (month < 3) {
-      month += 12
-      year -= 1
+    try {
+      // ✅ ALGORITMO: Zeller's congruence para calcular día de la semana
+      let monthNum = month
+      let yearNum = year
+      
+      if (monthNum < 3) {
+        monthNum += 12
+        yearNum -= 1
+      }
+      
+      const k = yearNum % 100
+      const j = Math.floor(yearNum / 100)
+      
+      const h = (day + Math.floor((13 * (monthNum + 1)) / 5) + k + Math.floor(k / 4) + Math.floor(j / 4) - 2 * j) % 7
+      
+      // ✅ MAPPING: 0 = Sábado, 1 = Domingo, 2 = Lunes, etc.
+      const days = ['sáb', 'dom', 'lun', 'mar', 'mié', 'jue', 'vie']
+      const dayOfWeek = days[h]
+      
+      console.log('📅 Cálculo manual:', { day, month: monthNum, year: yearNum, h, dayOfWeek })
+      
+      return dayOfWeek
+    } catch (error) {
+      console.error('❌ Error en getDayOfWeek:', error)
+      return 'err'
     }
-    
-    const k = year % 100
-    const j = Math.floor(year / 100)
-    
-    const h = (day + Math.floor((13 * (month + 1)) / 5) + k + Math.floor(k / 4) + Math.floor(j / 4) - 2 * j) % 7
-    
-    // ✅ MAPPING: 0 = Sábado, 1 = Domingo, 2 = Lunes, etc.
-    const days = ['SÁB', 'DOM', 'LUN', 'MAR', 'MIÉ', 'JUE', 'VIE']
-    const dayOfWeek = days[h]
-    
-    console.log('📅 Cálculo manual:', { day, month, year, h, dayOfWeek })
-    
-    return dayOfWeek
   }
 
   const getStatusBadge = (status: string) => {

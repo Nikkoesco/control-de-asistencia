@@ -983,39 +983,124 @@ export default function AttendancePage() {
     }
   }
 
-  // ✅ NUEVA FUNCIÓN: Obtener período de la colonia
+  // ✅ CORREGIDA FUNCIÓN: Obtener período de la colonia desde colony_periods
   const fetchColonyPeriod = async () => {
+    if (!userProfile?.colony_id) {
+      console.error('❌ No hay colony_id en userProfile:', userProfile)
+      return
+    }
+    
     try {
       const supabase = createClient()
       
-      const { data: colonyData, error: colonyError } = await supabase
+      console.log('🔍 Buscando período para colonia:', userProfile.colony_id)
+      console.log('🔍 userProfile completo:', userProfile)
+      
+      // ✅ VERIFICAR: Primero qué colonias existen
+      const { data: allColonies, error: coloniesError } = await supabase
         .from('colonies')
-        .select('periodo_desde, periodo_hasta')
-        .eq('id', userProfile?.colony_id)
+        .select('id, name')
+      
+      if (coloniesError) {
+        console.error('❌ Error obteniendo colonias:', coloniesError)
+        return
+      }
+      
+      console.log('✅ Todas las colonias disponibles:', allColonies)
+      
+      // ✅ VERIFICAR: Qué períodos existen (con más logging)
+      console.log(' Intentando obtener períodos...')
+      const { data: allPeriods, error: periodsError } = await supabase
+        .from('colony_periods')
+        .select('colony_id, periodo_desde, periodo_hasta, period_number')
+
+      console.log('🔍 Resultado de la consulta de períodos:')
+      console.log('  - data:', allPeriods)
+      console.log('  - error:', periodsError)
+      console.log('  - count:', allPeriods?.length)
+
+      if (periodsError) {
+        console.error('❌ Error obteniendo todos los períodos:', periodsError)
+        console.error('❌ Detalles del error:', {
+          message: periodsError.message,
+          details: periodsError.details,
+          hint: periodsError.hint,
+          code: periodsError.code
+        })
+        return
+      }
+      
+      console.log('✅ Todos los períodos disponibles:', allPeriods)
+      
+      // ✅ CARGAR: Período específico para la colonia del usuario
+      const { data: periodData, error: periodError } = await supabase
+        .from('colony_periods')
+        .select('periodo_desde, periodo_hasta, period_number')
+        .eq('colony_id', userProfile?.colony_id)
+        .order('period_number', { ascending: true })
+        .limit(1)
         .single()
 
-      if (colonyError) {
-        console.error('❌ Error al obtener período de la colonia:', colonyError)
+      if (periodError) {
+        console.error('❌ Error al obtener período de la colonia:', periodError)
+        console.error('❌ colony_id buscado:', userProfile?.colony_id)
+        console.error('❌ colony_ids disponibles en períodos:', allPeriods?.map(p => p.colony_id))
+        
+        // ✅ INTENTAR: Obtener cualquier período disponible
+        const { data: anyPeriodData, error: anyPeriodError } = await supabase
+          .from('colony_periods')
+          .select('periodo_desde, periodo_hasta, period_number')
+          .eq('colony_id', userProfile?.colony_id)
+          .limit(1)
+          .maybeSingle()
+
+        if (anyPeriodError) {
+          console.error('❌ Error al obtener cualquier período:', anyPeriodError)
+          return
+        }
+
+        if (anyPeriodData) {
+          console.log('✅ Período encontrado como respaldo:', anyPeriodData)
+          setColonyPeriod({
+            desde: anyPeriodData.periodo_desde,
+            hasta: anyPeriodData.periodo_hasta
+          })
+          return
+        }
+
+        // ✅ SI NO HAY PERÍODOS: Mostrar mensaje de error
+        console.error('❌ No se encontraron períodos para la colonia')
+        console.error('❌ colony_id del usuario:', userProfile?.colony_id)
+        console.error('❌ colony_ids en períodos:', allPeriods?.map(p => p.colony_id))
+        
+        // Assuming toast is available globally or imported
+        // toast({
+        //   title: "Error",
+        //   description: "No se encontraron períodos configurados para esta colonia",
+        //   variant: "destructive"
+        // })
         return
       }
 
-      if (colonyData?.periodo_desde && colonyData?.periodo_hasta) {
+      if (periodData?.periodo_desde && periodData?.periodo_hasta) {
         setColonyPeriod({
-          desde: colonyData.periodo_desde,
-          hasta: colonyData.periodo_hasta
+          desde: periodData.periodo_desde,
+          hasta: periodData.periodo_hasta
         })
         
         console.log('📅 Período de la colonia cargado:', {
-          desde: colonyData.periodo_desde,
-          hasta: colonyData.periodo_hasta
+          desde: periodData.periodo_desde,
+          hasta: periodData.periodo_hasta,
+          period_number: periodData.period_number
         })
         
         // ✅ CORRECCIÓN: Verificar que la fecha actual esté dentro del período
         const today = new Date()
         const todayString = today.toISOString().split('T')[0]
         
-        const startDate = new Date(colonyData.periodo_desde + 'T00:00:00')
-        const endDate = new Date(colonyData.periodo_hasta + 'T00:00:00')
+        // ✅ CORRECCIÓN: Procesar fechas sin conversiones de zona horaria
+        const startDate = new Date(periodData.periodo_desde + 'T12:00:00') // Usar mediodía para evitar problemas de zona horaria
+        const endDate = new Date(periodData.periodo_hasta + 'T12:00:00')
         
         console.log('📅 Verificando fecha actual:', {
           hoy: todayString,
@@ -1026,8 +1111,8 @@ export default function AttendancePage() {
         
         if (today < startDate || today > endDate) {
           // Si la fecha actual está fuera del período, usar la fecha de inicio
-          setSelectedDate(colonyData.periodo_desde)
-          console.log('⚠️ Fecha actual fuera del período, usando fecha de inicio:', colonyData.periodo_desde)
+          setSelectedDate(periodData.periodo_desde)
+          console.log('⚠️ Fecha actual fuera del período, usando fecha de inicio:', periodData.periodo_desde)
         }
       }
     } catch (error) {
@@ -1035,64 +1120,35 @@ export default function AttendancePage() {
     }
   }
 
-  // ✅ NUEVA FUNCIÓN: Cargar períodos de la colonia
+  // ✅ CORREGIDA FUNCIÓN: Cargar períodos de la colonia
   const fetchColonyPeriods = async () => {
     if (!userProfile?.colony_id) return
     
     try {
       const supabase = createClient()
       
-      // ✅ CARGAR: Períodos de colony_periods
+      console.log('🔍 Cargando períodos para colonia:', userProfile.colony_id)
+      
+      // ✅ CARGAR: Solo desde colony_periods (nueva estructura)
       const { data: periodsData, error: periodsError } = await supabase
         .from('colony_periods')
         .select('*')
         .eq('colony_id', userProfile.colony_id)
-        .order('created_at', { ascending: false })
+        .order('period_number', { ascending: true })
 
       if (periodsError) {
         console.error('Error cargando períodos:', periodsError)
         return
       }
 
-      // ✅ OBTENER: Período actual de la colonia
-      const { data: colonyData, error: colonyError } = await supabase
-        .from('colonies')
-        .select('id, periodo_desde, periodo_hasta, season_desc')
-        .eq('id', userProfile.colony_id)
-        .single()
-
-      if (colonyError) {
-        console.error('Error cargando colonia:', colonyError)
-        return
-      }
-
-      // ✅ COMBINAR: Períodos de colony_periods + período actual de la colonia
-      const allPeriods = []
+      console.log('📅 Períodos encontrados:', periodsData)
       
-      // Agregar período actual de la colonia
-      if (colonyData) {
-        allPeriods.push({
-          id: colonyData.id,
-          periodo_desde: colonyData.periodo_desde,
-          periodo_hasta: colonyData.periodo_hasta,
-          season_desc: colonyData.season_desc,
-          is_current: true
-        })
-      }
-
-      // Agregar períodos adicionales
-      if (periodsData) {
-        allPeriods.push(...periodsData.map(p => ({ ...p, is_current: false })))
-      }
-
-      setColonyPeriods(allPeriods)
+      // ✅ SIMPLIFICAR: Solo usar períodos de colony_periods
+      setColonyPeriods(periodsData || [])
       
-      // ✅ AUTO-SELECCIONAR: El período actual por defecto
-      if (allPeriods.length > 0) {
-        setSelectedPeriodId(allPeriods[0].id)
-      }
+      console.log('📅 Períodos cargados en estado:', periodsData)
     } catch (error) {
-      console.error('Error en fetchColonyPeriods:', error)
+      console.error('Error cargando períodos:', error)
     }
   }
 

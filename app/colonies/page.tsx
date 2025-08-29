@@ -25,7 +25,7 @@ interface Colony {
     season_desc: string
     period_number: number
   }>
-  // ❌ ELIMINADO: periodo_desde, periodo_hasta, season_desc
+ 
 }
 
 export default function ColoniesPage() {

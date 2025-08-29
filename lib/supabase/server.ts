@@ -6,8 +6,8 @@ import { cookies } from "next/headers"
  * global variable. Always create a new client within each function when using
  * it.
  */
-export function createClient() {
-  const cookieStore = cookies()
+export async function createClient() {
+  const cookieStore = await cookies()
 
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -34,14 +34,16 @@ export function createClient() {
 }
 
 // Cliente con permisos de administrador para operaciones sensibles
-export function createAdminClient() {
+export async function createAdminClient() {
+  const cookieStore = await cookies()
+  
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!, // Clave de servicio
     {
       cookies: {
         getAll() {
-          return cookies().getAll()
+          return cookieStore.getAll()
         },
         setAll() {
           // No necesitamos manejar cookies para operaciones admin

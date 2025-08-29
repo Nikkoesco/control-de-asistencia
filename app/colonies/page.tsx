@@ -572,26 +572,25 @@ export default function ColoniesPage() {
                     id="name"
                     value={newColonyName}
                     onChange={(e) => setNewColonyName(e.target.value)}
-                    placeholder="Ej: Colonia A"
+                    placeholder="Ej: Colonia Gutierrez"
+                    required
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="code">Código de la Colonia (Opcional)</Label>
+                  <Label htmlFor="code">Código de la Colonia *</Label>
                   <Input
                     id="code"
                     value={newColonyCode}
                     onChange={(e) => setNewColonyCode(e.target.value)}
-                    placeholder="Ej: COL-001, A-2024, etc. (se genera automáticamente si está vacío)"
+                    placeholder="Ej: 2346"
+                    required
                   />
-                  <p className="text-xs text-muted-foreground">
-                    Si dejas este campo vacío, se generará un código único automáticamente
-                  </p>
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="periodo">Período *</Label>
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <Label htmlFor="periodo_desde" className="text-xs">Desde</Label>
+                      <Label htmlFor="periodo_desde" className="text-xs">Desde *</Label>
                       <Input
                         id="periodo_desde"
                         type="date"
@@ -601,7 +600,7 @@ export default function ColoniesPage() {
                       />
                     </div>
                     <div>
-                      <Label htmlFor="periodo_hasta" className="text-xs">Hasta</Label>
+                      <Label htmlFor="periodo_hasta" className="text-xs">Hasta *</Label>
                       <Input
                         id="periodo_hasta"
                         type="date"
@@ -618,16 +617,14 @@ export default function ColoniesPage() {
                   )}
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="season">Temporada (Opcional)</Label>
+                  <Label htmlFor="season">Temporada *</Label>
                   <Input
                     id="season"
                     value={newColonySeason}
                     onChange={(e) => setNewColonySeason(e.target.value)}
                     placeholder="Ej: Verano 2024, Invierno 2025, etc."
+                    required
                   />
-                  <p className="text-xs text-muted-foreground">
-                    Identifica la temporada o período específico de la colonia
-                  </p>
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="description">Descripción</Label>

@@ -67,13 +67,154 @@ export default function AttendancePage() {
     checkUserAndFetchData()
   }, [])
 
-  // ✅ NUEVO: useEffect para cargar asistencia cuando students cambie
+  // ✅ SOLUCIÓN NUEVA: Un solo useEffect para manejar cambios de fecha
+  useEffect(() => {
+    const loadAttendanceForDate = async () => {
+      if (!selectedDate || !userProfile?.colony_id || students.length === 0 || isLoading) {
+        return
+      }
+
+      console.log('📅 Cargando datos para fecha:', selectedDate)
+      
+      // Reiniciar estados INMEDIATAMENTE
+      setIsAttendanceSaved(false)
+      setShowSuccessMessage(false)
+      setIsLoadingDate(true)
+      
+      // Inicializar attendance con estudiantes sin marcar
+      const initialAttendance: Record<string, AttendanceRecord> = {}
+      students.forEach((student) => {
+        initialAttendance[student.id] = {
+          student_id: student.id,
+          status: "unmarked",
+        }
+      })
+      setAttendance(initialAttendance)
+      setExistingAttendance({})
+
+      // Cargar asistencia existente
+      try {
+        const supabase = createClient()
+
+        // ✅ INTENTAR PRIMERO con colony_attendance
+        let { data: existingData, error: existingError } = await supabase
+          .from('colony_attendance')
+          .select('student_id, status, season_desc')
+          .eq('colony_id', userProfile.colony_id)
+          .eq('date', selectedDate)
+
+        if (existingError) {
+          console.log('⚠️ Error con colony_attendance, intentando con attendance:', existingError)
+          
+          // ✅ FALLBACK: Usar la tabla attendance
+          const { data: fallbackData, error: fallbackError } = await supabase
+            .from('attendance')
+            .select('student_id, status')
+            .eq('date', selectedDate)
+
+          if (fallbackError) {
+            console.log('❌ Error con ambas tablas:', fallbackError)
+            setIsLoadingDate(false)
+            return
+          }
+
+          existingData = fallbackData
+          console.log('🔄 Usando datos de attendance (fallback)')
+        } else {
+          console.log('✅ Datos cargados de colony_attendance con temporada')
+        }
+
+        if (existingData && existingData.length > 0) {
+          console.log('📊 Asistencia existente encontrada:', existingData.length, 'registros para fecha:', selectedDate)
+          
+          const existingAttendanceMap: Record<string, AttendanceRecord> = {}
+          const updatedAttendance: Record<string, AttendanceRecord> = { ...initialAttendance }
+          
+          existingData.forEach((record) => {
+            existingAttendanceMap[record.student_id] = {
+              student_id: record.student_id,
+              status: record.status as "present" | "absent" | "unmarked",
+              ...(record.season_desc && { season: record.season_desc })
+            }
+            
+            // Actualizar también el estado de attendance
+            if (updatedAttendance[record.student_id]) {
+              updatedAttendance[record.student_id] = {
+                student_id: record.student_id,
+                status: record.status as "present" | "absent" | "unmarked"
+              }
+            }
+          })
+
+          setExistingAttendance(existingAttendanceMap)
+          setAttendance(updatedAttendance)
+
+          // ✅ VERIFICAR: Si todos los estudiantes están marcados
+          const allStudentsMarked = students.every(student => 
+            existingAttendanceMap[student.id] && 
+            existingAttendanceMap[student.id].status !== "unmarked"
+          )
+          
+          if (allStudentsMarked) {
+            console.log('✅ Todos los estudiantes están marcados para fecha:', selectedDate)
+            setIsAttendanceSaved(true)
+          } else {
+            console.log('⚠️ Algunos estudiantes no están marcados para fecha:', selectedDate)
+            setIsAttendanceSaved(false)
+          }
+
+          console.log('✅ Asistencia cargada para fecha:', selectedDate)
+        } else {
+          console.log('ℹ️ No hay asistencia existente para fecha:', selectedDate)
+          setExistingAttendance({})
+          setIsAttendanceSaved(false)
+        }
+      } catch (error) {
+        console.error('Error cargando asistencia para fecha:', selectedDate, error)
+        setIsAttendanceSaved(false)
+      } finally {
+        setIsLoadingDate(false)
+      }
+    }
+
+    loadAttendanceForDate()
+  }, [selectedDate, userProfile?.colony_id, students, isLoading])
+
+  // ✅ ELIMINAR: Los otros useEffects que causan conflictos
+  // Comentar o eliminar estos useEffects:
+  /*
   useEffect(() => {
     if (students.length > 0 && selectedDate && !isLoading) {
       console.log('🔄 Students cargados, cargando asistencia existente...')
       fetchExistingAttendance()
     }
   }, [students, selectedDate, isLoading])
+
+  useEffect(() => {
+    if (students.length > 0 && Object.keys(attendance).length > 0) {
+      const allMarked = students.every(student => 
+        attendance[student.id] && 
+        attendance[student.id].status !== "unmarked"
+      )
+      
+      if (allMarked && Object.keys(existingAttendance).length > 0) {
+        console.log('✅ Todos los estudiantes marcados detectados, actualizando estado')
+        setIsAttendanceSaved(true)
+      }
+    }
+  }, [attendance, students, existingAttendance])
+  */
+
+  // ✅ NUEVO: useEffect para detectar cambios en selectedPeriodId
+  useEffect(() => {
+    if (selectedPeriodId && colonyPeriods.length > 0) {
+      const selectedPeriod = colonyPeriods.find(p => p.id === selectedPeriodId)
+      if (selectedPeriod) {
+        console.log('📅 Período seleccionado:', selectedPeriod)
+        setSelectedDate(selectedPeriod.periodo_desde)
+      }
+    }
+  }, [selectedPeriodId, colonyPeriods])
 
   // ✅ NUEVO: useEffect para cargar el período de la colonia
   useEffect(() => {
@@ -145,11 +286,10 @@ export default function AttendancePage() {
 
       console.log('🔍 Iniciando fetchDataByColony para colonia:', colonyId)
 
-      // ✅ CORRECCIÓN: Filtrar SOLO estudiantes de esta colonia
       const { data: studentsData, error: studentsError } = await supabase
         .from('students')
         .select('*')
-        .eq('colony_id', colonyId)  // ← AGREGAR ESTE FILTRO
+        .eq('colony_id', colonyId)
 
       if (studentsError) {
         console.error('❌ Error al obtener estudiantes:', studentsError)
@@ -164,31 +304,12 @@ export default function AttendancePage() {
       }
 
       console.log('✅ Estudiantes encontrados para la colonia:', studentsData.length)
-      console.log('📚 Datos de estudiantes:', studentsData)
-
-      // ✅ NO necesitamos transformar, ya tienen el colony_id correcto
-      setStudents(studentsData)
-
-      // Initialize attendance records with "unmarked" status
-      const initialAttendance: Record<string, AttendanceRecord> = {}
-      studentsData.forEach((student) => {
-        initialAttendance[student.id] = {
-          student_id: student.id,
-          status: "unmarked",
-        }
-      })
-      setAttendance(initialAttendance)
       
-      // ❌ ELIMINAR: Esta llamada que causa el problema
-      // if (studentsData && studentsData.length > 0) {
-      //   console.log('🔄 Cargando asistencia existente después de cargar estudiantes...')
-      //   await fetchExistingAttendance()
-      // }
+      // ✅ SOLO establecer estudiantes, el useEffect se encarga del resto
+      setStudents(studentsData)
+      
     } catch (error) {
       console.error("Error al cargar datos por colonia:", error)
-      console.error("Detalles del error:", JSON.stringify(error, null, 2))
-      
-      // En caso de error, mostrar mensaje al usuario
       alert("Error al cargar los datos. Por favor, verifica tu conexión e intenta de nuevo.")
     } finally {
       setIsLoading(false)
@@ -206,22 +327,9 @@ export default function AttendancePage() {
 
       if (studentsError) throw studentsError
 
+      // ✅ SOLO establecer estudiantes, el useEffect se encarga del resto
       setStudents(studentsData || [])
-
-      const initialAttendance: Record<string, AttendanceRecord> = {}
-      studentsData?.forEach((student) => {
-        initialAttendance[student.id] = {
-          student_id: student.id,
-          status: "unmarked",
-        }
-      })
-      setAttendance(initialAttendance)
       
-      // IMPORTANTE: Después de cargar estudiantes, cargar asistencia existente de la fecha actual
-      if (studentsData && studentsData.length > 0) {
-        console.log('🔄 Cargando asistencia existente después de cargar estudiantes...')
-        await fetchExistingAttendance()
-      }
     } catch (error) {
       console.error("Error al cargar datos:", error)
     } finally {
@@ -229,77 +337,8 @@ export default function AttendancePage() {
     }
   }
 
-  const fetchExistingAttendance = async () => {
-    try {
-      if (!selectedDate || !userProfile?.colony_id) return
-
-      console.log('🔄 Cargando asistencia existente para fecha:', selectedDate)
-      console.log('🏛️ ID de colonia:', userProfile.colony_id)
-
-      const supabase = createClient()
-
-      // ✅ INTENTAR PRIMERO con colony_attendance
-      let { data: existingData, error: existingError } = await supabase
-        .from('colony_attendance')
-        .select('student_id, status, season_desc')  // ✅ NUEVO: Incluir temporada
-        .eq('colony_id', userProfile.colony_id)
-        .eq('date', selectedDate)
-
-      if (existingError) {
-        console.log('⚠️ Error con colony_attendance, intentando con attendance:', existingError)
-        
-        // ✅ FALLBACK: Usar la tabla attendance
-        const { data: fallbackData, error: fallbackError } = await supabase
-          .from('attendance')
-          .select('student_id, status')
-          .eq('date', selectedDate)
-
-        if (fallbackError) {
-          console.log('❌ Error con ambas tablas:', fallbackError)
-          return
-        }
-
-        existingData = fallbackData
-        console.log('🔄 Usando datos de attendance (fallback)')
-      } else {
-        console.log('✅ Datos cargados de colony_attendance con temporada')
-      }
-
-      if (existingData && existingData.length > 0) {
-        console.log('📊 Asistencia existente encontrada:', existingData.length, 'registros')
-        
-        const existingAttendanceMap: Record<string, AttendanceRecord> = {}
-        existingData.forEach((record) => {
-          existingAttendanceMap[record.student_id] = {
-            student_id: record.student_id,
-            status: record.status as "present" | "absent" | "unmarked",
-            // ✅ NUEVO: Opcionalmente mostrar temporada en logs
-            ...(record.season_desc && { season: record.season_desc })
-          }
-        })
-
-        setExistingAttendance(existingAttendanceMap)
-        
-        // ✅ NUEVO: Actualizar el estado de asistencia con datos existentes
-        setAttendance(prev => {
-          const updated = { ...prev }
-          Object.keys(updated).forEach(studentId => {
-            if (existingAttendanceMap[studentId]) {
-              updated[studentId] = existingAttendanceMap[studentId]
-            }
-          })
-          return updated
-        })
-
-        console.log('✅ Asistencia existente cargada y aplicada')
-      } else {
-        console.log('ℹ️ No hay asistencia existente para esta fecha')
-        setExistingAttendance({})
-      }
-    } catch (error) {
-      console.error('Error fetching existing attendance:', error)
-    }
-  }
+  // ✅ ELIMINAR: La función fetchExistingAttendance ya no se necesita
+  // porque toda la lógica está en el useEffect
 
   const handleStatusChange = (studentId: string, status: "present" | "absent") => {
     setAttendance((prev) => ({
@@ -466,13 +505,13 @@ export default function AttendancePage() {
       // Mostrar mensaje de éxito
       setShowSuccessMessage(true)
       
-      // Ocultar mensaje después de 5 segundos
+      // Ocultar mensaje después de 8 segundos (más tiempo para que sea visible)
       setTimeout(() => {
         setShowSuccessMessage(false)
-      }, 5000)
+      }, 8000)
 
       // Recargar la asistencia para confirmar que se guardó
-      await fetchExistingAttendance()
+      // await fetchExistingAttendance() // Eliminado, ahora el useEffect se encarga
       
       console.log('🔄 Asistencia recargada después de guardar')
       
@@ -485,6 +524,30 @@ export default function AttendancePage() {
       alert("Error al guardar la asistencia: " + (error as Error).message)
     } finally {
       setIsSaving(false)
+    }
+  }
+
+  const handleDateChange = async (newDate: string) => {
+    console.log('📅 Cambiando fecha de:', selectedDate, 'a:', newDate)
+    
+    // ✅ NUEVO: Limpiar estados al cambiar fecha
+    setSelectedDate(newDate)
+    setIsLoadingDate(true)
+    setIsAttendanceSaved(false)  // ← REINICIAR estado de asistencia guardada
+    setShowSuccessMessage(false)  // ← REINICIAR mensaje de éxito
+    setAttendance({})  // ← REINICIAR estado de asistencia
+    setExistingAttendance({})  // ← REINICIAR asistencia existente
+    
+    // Esperar un momento para que se actualice la UI
+    await new Promise(resolve => setTimeout(resolve, 100))
+    
+    try {
+      // Recargar estudiantes y asistencia para la nueva fecha
+      await checkUserAndFetchData()
+    } catch (error) {
+      console.error('Error al cambiar fecha:', error)
+    } finally {
+      setIsLoadingDate(false)
     }
   }
 
@@ -919,8 +982,8 @@ export default function AttendancePage() {
         const day = String(prevDate.getDate()).padStart(2, '0')
         const dateString = `${year}-${month}-${day}`
         
-        setSelectedDate(dateString)
         console.log('📅 Navegando a fecha anterior:', dateString)
+        setSelectedDate(dateString)
       } else {
         console.log('⚠️ No se puede ir antes del inicio del período:', colonyPeriod.desde)
       }
@@ -935,8 +998,8 @@ export default function AttendancePage() {
         const day = String(nextDate.getDate()).padStart(2, '0')
         const dateString = `${year}-${month}-${day}`
         
-        setSelectedDate(dateString)
         console.log('📅 Navegando a fecha siguiente:', dateString)
+        setSelectedDate(dateString)
       } else {
         console.log('⚠️ No se puede ir después del fin del período:', colonyPeriod.hasta)
       }
@@ -1111,8 +1174,8 @@ export default function AttendancePage() {
         
         if (today < startDate || today > endDate) {
           // Si la fecha actual está fuera del período, usar la fecha de inicio
-          setSelectedDate(periodData.periodo_desde)
           console.log('⚠️ Fecha actual fuera del período, usando fecha de inicio:', periodData.periodo_desde)
+          setSelectedDate(periodData.periodo_desde)
         }
       }
     } catch (error) {
@@ -1261,24 +1324,24 @@ export default function AttendancePage() {
                 </div>
               )}
               
-              {/* Mensaje de éxito o estado guardado */}
+              {/* Mensaje de éxito o estado guardado - CORREGIDO */}
               {showSuccessMessage && (
                 <div className="mt-4 flex justify-center">
-                  <div className="bg-green-100 border border-green-300 text-green-800 px-4 py-2 rounded-md flex items-center gap-2">
-                    <CheckCircle className="h-4 w-4 text-green-600" />
-                    <span className="font-medium">
-                      {isAttendanceSaved ? 'Asistencia completa guardada' : 'Registro de asistencia guardado'}
+                  <div className="bg-green-100 border border-green-300 text-green-800 px-6 py-3 rounded-md flex items-center gap-2 shadow-md">
+                    <CheckCircle className="h-5 w-5 text-green-600" />
+                    <span className="font-medium text-lg">
+                      ¡Asistencia guardada exitosamente!
                     </span>
                   </div>
                 </div>
               )}
               
-              {/* Indicador de estado guardado */}
+              {/* Indicador de estado guardado - MEJORADO */}
               {isAttendanceSaved && !showSuccessMessage && (
                 <div className="mt-4 flex justify-center">
-                  <div className="bg-blue-100 border border-blue-300 text-blue-800 px-3 py-1 rounded-md flex items-center gap-2">
-                    <CheckCircle className="h-3 w-3 text-blue-600" />
-                    <span className="text-sm font-medium">Asistencia guardada</span>
+                  <div className="bg-green-100 border border-green-300 text-green-800 px-4 py-2 rounded-md flex items-center gap-2">
+                    <CheckCircle className="h-4 w-4 text-green-600" />
+                    <span className="font-medium">Asistencia completa guardada</span>
                   </div>
                 </div>
               )}
@@ -1483,8 +1546,11 @@ export default function AttendancePage() {
                 </CardContent>
               </Card>
 
-              {/* Existing attendance alert - Actualizada */}
-              {Object.keys(existingAttendance).length > 0 && !isLoadingDate && !isAttendanceSaved && (
+              {/* Existing attendance alert - CORREGIDA */}
+              {Object.keys(existingAttendance).length > 0 && 
+               !isLoadingDate && 
+               !isAttendanceSaved && 
+               Object.values(attendance).some(record => record.status === "unmarked") && (
                 <Alert>
                   <AlertDescription>
                     Hay algunos registros de asistencia para esta fecha, pero no todos los estudiantes están marcados. Puedes completar la lista y guardar.
@@ -1635,10 +1701,11 @@ export default function AttendancePage() {
                         </div>
                       )}
 
-                      {/* Mensaje cuando no hay estudiantes sin marcar */}
+                      {/* Mensaje cuando no hay estudiantes sin marcar - MEJORADO */}
                       {filteredStudents.filter(s => attendance[s.id]?.status === "unmarked").length === 0 && (
-                        <Alert>
-                          <AlertDescription className="text-center">
+                        <Alert className="border-green-200 bg-green-50">
+                          <CheckCircle className="h-4 w-4 text-green-600" />
+                          <AlertDescription className="text-green-800 font-medium">
                             ¡Excelente! Todos los estudiantes han sido marcados. Puedes guardar la asistencia o cambiar algún estado si es necesario.
                           </AlertDescription>
                         </Alert>

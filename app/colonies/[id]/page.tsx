@@ -738,7 +738,7 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
     setShowNewPeriodModal(true)
   }
 
-  // ✅ MODIFICADA FUNCIÓN: Crear nuevo período con period_number
+  // ✅ MODIFICADA FUNCIÓN: Crear nuevo período (CORREGIDA)
   const createNewPeriod = async () => {
     if (!newPeriodData.periodo_desde || !newPeriodData.periodo_hasta) {
       toast({
@@ -760,35 +760,25 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
 
     try {
       setIsCreatingPeriod(true)
-      const supabase = createClient()
       
-      // ✅ PASO 1: Obtener el próximo period_number (simplificado)
-      // Por ahora, usar un contador simple basado en períodos existentes
-      const { data: existingPeriods, error: countError } = await supabase
-        .from('colony_periods')
-        .select('id')  // ✅ SOLO seleccionar id, no period_number
-        .eq('colony_id', colonyId)
-
-      if (countError) {
-        console.error('Error contando períodos existentes:', countError)
-        // ✅ NO lanzar error, usar valor por defecto
-        console.log('⚠️ Usando period_number por defecto')
+      // ✅ CORRECCIÓN: Obtener el próximo número de período correctamente
+      let nextPeriodNumber = 1
+      
+      if (colonyPeriods && colonyPeriods.length > 0) {
+        // ✅ Obtener el número más alto de período existente
+        const maxPeriodNumber = Math.max(...colonyPeriods.map(p => p.period_number))
+        nextPeriodNumber = maxPeriodNumber + 1
       }
-
-      // ✅ CALCULAR: Siguiente period_number basado en cantidad de períodos
-      const nextPeriodNumber = existingPeriods ? existingPeriods.length + 2 : 2
-      // ✅ Empezar en 2 porque 1 es la colonia original, 2 es el primer período adicional
-
-      console.log(`🔄 Creando período número ${nextPeriodNumber}`)
-      console.log(`🔄 Períodos existentes: ${existingPeriods?.length || 0}`)
       
-      // ✅ PASO 2: Insertar nuevo período SIN period_number por ahora
+      console.log(`🔄 Creando período número ${nextPeriodNumber}`)
+      console.log(`🔄 Períodos existentes:`, colonyPeriods?.map(p => p.period_number))
+      
+      // ✅ CREAR: Nuevo período
       const { data, error } = await supabase
         .from('colony_periods')
         .insert({
           colony_id: colonyId,
-          period_number: nextPeriodNumber, // ✅ AGREGAR: period_number
-          // name: newPeriodData.name, // ❌ COMENTAR: hasta que se cree la columna
+          period_number: nextPeriodNumber,
           periodo_desde: newPeriodData.periodo_desde,
           periodo_hasta: newPeriodData.periodo_hasta,
           season_desc: newPeriodData.season_desc,
@@ -798,10 +788,7 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
         .select()
         .single()
 
-      if (error) {
-        console.error('❌ Error de Supabase:', error)
-        throw new Error(`Error de base de datos: ${error.message}`)
-      }
+      if (error) throw error
 
       toast({
         title: "Éxito",
@@ -818,7 +805,7 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
         season_desc: ''
       })
 
-      // ✅ ACTUALIZAR: Recargar períodos y redirigir a import
+      // ✅ ACTUALIZAR: Lista de períodos y redirigir
       await fetchColonyPeriods()
       router.push(`/colonies/${colonyId}/import`)
       
@@ -849,39 +836,36 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
     return diffDays
   }
 
-  // ✅ NUEVA FUNCIÓN: Cargar períodos de la colonia
+  // ✅ SIMPLIFICAR: Solo cargar períodos, no crear automáticamente
   const fetchColonyPeriods = async () => {
     try {
+      console.log('🔄 fetchColonyPeriods ejecutándose para colonyId:', colonyId);
       setLoadingPeriods(true)
       const supabase = createClient()
+      
+      console.log('🔄 Cargando períodos para colonia:', colonyId)
       
       const { data, error } = await supabase
         .from('colony_periods')
         .select('*')
         .eq('colony_id', colonyId)
-        .order('created_at', { ascending: false })
+        .order('period_number', { ascending: true })
 
       if (error) throw error
+      
+      console.log('✅ Períodos cargados:', data);
+      console.log('✅ Cantidad de períodos:', data?.length || 0);
       setColonyPeriods(data || [])
     } catch (error) {
-      console.error('Error fetching colony periods:', error)
+      console.error('❌ Error en fetchColonyPeriods:', error)
     } finally {
       setLoadingPeriods(false)
     }
   }
 
-  // ✅ LLAMAR: Cargar períodos cuando se monta el componente
-  useEffect(() => {
-    if (colonyId) {
-      fetchColonyPeriods()
-    }
-  }, [colonyId])
-
-  // ✅ NUEVA FUNCIÓN: Obtener perfil del usuario
+  // ✅ AGREGAR: Función fetchUserProfile que está faltante
   const fetchUserProfile = async () => {
     try {
-      const supabase = createClient()
-      
       const { data: { user }, error: authError } = await supabase.auth.getUser()
       if (authError || !user) {
         console.error('Error de autenticación:', authError)
@@ -907,10 +891,41 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
     }
   }
 
+  // ✅ SIMPLIFICAR: Solo cargar períodos al montar el componente
+  useEffect(() => {
+    console.log('🔄 useEffect [colonyId] ejecutándose con colonyId:', colonyId);
+    if (colonyId) {
+      fetchColonyPeriods()
+    }
+  }, [colonyId])
+
   // ✅ LLAMAR: Obtener perfil cuando se monta el componente
   useEffect(() => {
     fetchUserProfile()
   }, [])
+
+  // ✅ AGREGAR: Función helper para formatear fechas sin zona horaria
+  const formatPeriodoSimple = (desde: string, hasta: string) => {
+    try {
+      // ✅ Procesar fechas directamente sin Date object
+      const formatDate = (dateString: string) => {
+        if (!dateString) return 'N/A'
+        
+        const [year, month, day] = dateString.split('-')
+        if (!year || !month || !day) return 'N/A'
+        
+        return `${day}/${month}/${year}`
+      }
+      
+      const desdeFormatted = formatDate(desde)
+      const hastaFormatted = formatDate(hasta)
+      
+      return `${desdeFormatted} - ${hastaFormatted}`
+    } catch (error) {
+      console.error('Error en formatPeriodoSimple:', error)
+      return `${desde} - ${hasta}`
+    }
+  }
 
   if (loading) {
     return (
@@ -1388,7 +1403,8 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
                       {period.season_desc || 'Sin temporada'}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {new Date(period.periodo_desde).toLocaleDateString()} - {new Date(period.periodo_hasta).toLocaleDateString()}
+                      {/* ✅ CORREGIDO: Mostrar fechas sin conversiones de zona horaria */}
+                      {formatPeriodoSimple(period.periodo_desde, period.periodo_hasta)}
                     </p>
                   </div>
                   <Badge variant="outline">
@@ -1403,3 +1419,4 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
     </div>
   )
 }
+

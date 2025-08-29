@@ -17,12 +17,15 @@ interface Colony {
   name: string
   description: string
   colony_code: string
-  periodo_desde: string
-  periodo_hasta: string
-  season_desc: string | null
   created_at: string
   student_count: number
-  period_dates: string[]  // ✅ NUEVO: array de fechas de períodos
+  period_dates: Array<{
+    periodo_desde: string
+    periodo_hasta: string
+    season_desc: string
+    period_number: number
+  }>
+  // ❌ ELIMINADO: periodo_desde, periodo_hasta, season_desc
 }
 
 export default function ColoniesPage() {
@@ -48,7 +51,7 @@ export default function ColoniesPage() {
     fetchColonies()
   }, [])
 
-  // ✅ MODIFICADA FUNCIÓN: Cargar colonias con fechas de períodos
+  // ✅ MODIFICADA FUNCIÓN: Cargar colonias con períodos desde colony_periods
   const fetchColonies = async () => {
     try {
       setLoading(true)
@@ -59,18 +62,24 @@ export default function ColoniesPage() {
         .select(`
           *,
           student_count:students(count),
-          period_dates:colony_periods(periodo_desde, periodo_hasta, season_desc)
+          period_dates:colony_periods(periodo_desde, periodo_hasta, season_desc, period_number)
         `)
         .order('created_at', { ascending: false })
 
       if (error) throw error
 
-      // ✅ PROCESAR: Convertir contadores y fechas de períodos
+      // ✅ PROCESAR: Convertir contadores y obtener períodos
       const coloniesWithData = data?.map(colony => ({
         ...colony,
-        student_count: Array.isArray(colony.student_count) ? colony.student_count.length : 0,
+        student_count: colony.student_count?.[0]?.count || 0,
         period_dates: Array.isArray(colony.period_dates) ? colony.period_dates : []
       })) || []
+
+      console.log('✅ Colonias procesadas:', coloniesWithData.map(c => ({
+        name: c.name,
+        student_count: c.student_count,
+        period_dates: c.period_dates
+      })))
 
       setColonies(coloniesWithData)
     } catch (error) {
@@ -85,6 +94,7 @@ export default function ColoniesPage() {
     }
   }
 
+  // ✅ AGREGAR: Validación para evitar duplicados en la creación de colonia
   const createColony = async () => {
     if (!newColonyName.trim()) {
       toast({
@@ -118,25 +128,62 @@ export default function ColoniesPage() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) throw new Error("Usuario no autenticado")
 
-      const { data, error } = await supabase
+      // ✅ CORRECCIÓN: Ajustar fechas para evitar problemas de zona horaria
+      const adjustDateForTimezone = (dateString: string) => {
+        try {
+          const [year, month, day] = dateString.split('-').map(Number)
+          const localDate = new Date(year, month - 1, day)
+          const yearStr = localDate.getFullYear()
+          const monthStr = String(localDate.getMonth() + 1).padStart(2, '0')
+          const dayStr = String(localDate.getDate()).padStart(2, '0')
+          return `${yearStr}-${monthStr}-${dayStr}`
+        } catch (error) {
+          console.error('Error ajustando fecha:', error)
+          return dateString
+        }
+      }
+
+      const periodoDesde = adjustDateForTimezone(newColonyPeriodoDesde)
+      const periodoHasta = adjustDateForTimezone(newColonyPeriodoHasta)
+
+      console.log('🔄 Fechas ajustadas:', { desde: periodoDesde, hasta: periodoHasta })
+
+      // ✅ PASO 1: Crear la colonia SIN fechas de período
+      const { data: colony, error: colonyError } = await supabase
         .from('colonies')
         .insert({
           name: newColonyName.trim(),
           description: newColonyDescription.trim(),
           colony_code: newColonyCode.trim() || null,
-          periodo_desde: newColonyPeriodoDesde,
-          periodo_hasta: newColonyPeriodoHasta,
-          season_desc: newColonySeason.trim() || null,  // ✅ NUEVO: campo de temporada
+          // ❌ ELIMINADO: periodo_desde, periodo_hasta, season_desc
+          period_number: 1,
           created_by: user.id
         })
         .select()
         .single()
 
-      if (error) throw error
+      if (colonyError) throw colonyError
+
+      // ✅ PASO 2: Crear el período inicial en colony_periods
+      const { error: periodError } = await supabase
+        .from('colony_periods')
+        .insert({
+          colony_id: colony.id,
+          period_number: 1,
+          description: newColonyDescription.trim() || 'Período inicial',
+          periodo_desde: periodoDesde,
+          periodo_hasta: periodoHasta,
+          season_desc: newColonySeason.trim() || '2024-2025',
+          created_by: user.id
+        })
+
+      if (periodError) {
+        console.warn('Warning: Could not create initial period:', periodError)
+      }
 
       toast({
         title: "Éxito",
-        description: "Colonia creada correctamente"
+        description: "Colonia creada correctamente con período inicial"
       })
 
       setNewColonyName("")
@@ -144,7 +191,7 @@ export default function ColoniesPage() {
       setNewColonyCode("")
       setNewColonyPeriodoDesde("")
       setNewColonyPeriodoHasta("")
-      setNewColonySeason("")  // ✅ NUEVO: limpiar campo de temporada
+      setNewColonySeason("")
       setIsCreateDialogOpen(false)
       fetchColonies()
     } catch (error) {
@@ -156,6 +203,35 @@ export default function ColoniesPage() {
       })
     } finally {
       setIsCreating(false)
+    }
+  }
+
+  // ✅ FUNCIÓN: Ajustar fechas para evitar problemas de zona horaria
+  const adjustDateForTimezone = (dateString: string) => {
+    try {
+      // ✅ Crear fecha en la zona horaria local
+      const [year, month, day] = dateString.split('-').map(Number)
+      
+      // ✅ Crear fecha usando el constructor local (evita conversiones UTC)
+      const localDate = new Date(year, month - 1, day) // month - 1 porque JavaScript cuenta desde 0
+      
+      // ✅ Formatear como YYYY-MM-DD
+      const yearStr = localDate.getFullYear()
+      const monthStr = String(localDate.getMonth() + 1).padStart(2, '0')
+      const dayStr = String(localDate.getDate()).padStart(2, '0')
+      
+      const result = `${yearStr}-${monthStr}-${dayStr}`
+      
+      console.log('🔄 Ajuste de fecha:', {
+        original: dateString,
+        localDate: localDate,
+        resultado: result
+      })
+      
+      return result
+    } catch (error) {
+      console.error('Error ajustando fecha:', error)
+      return dateString // ✅ Retornar original si hay error
     }
   }
 
@@ -417,13 +493,28 @@ export default function ColoniesPage() {
   }
 
   const formatPeriodo = (desde: string, hasta: string) => {
-    // Crear fechas y ajustar para evitar problemas de zona horaria
-    const desdeDate = new Date(desde + 'T00:00:00')
-    const hastaDate = new Date(hasta + 'T00:00:00')
-    
-    const desdeFormatted = desdeDate.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' })
-    const hastaFormatted = hastaDate.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' })
-    return `${desdeFormatted} - ${hastaFormatted}`
+    try {
+      // ✅ CORRECCIÓN: Procesar fechas SIN conversiones de zona horaria
+      const formatDate = (dateString: string) => {
+        if (!dateString) return 'N/A'
+        
+        // ✅ Dividir la fecha directamente sin usar Date object
+        const [year, month, day] = dateString.split('-')
+        
+        if (!year || !month || !day) return 'N/A'
+        
+        // ✅ Formatear como DD/MM sin conversiones
+        return `${day}/${month}`
+      }
+      
+      const desdeFormatted = formatDate(desde)
+      const hastaFormatted = formatDate(hasta)
+      
+      return `${desdeFormatted} - ${hastaFormatted}`
+    } catch (error) {
+      console.error('Error en formatPeriodo:', error)
+      return `${desde} - ${hasta}` // ✅ Fallback a formato original
+    }
   }
 
   const calculateDays = (desde: string, hasta: string) => {
@@ -591,30 +682,42 @@ export default function ColoniesPage() {
                       Código: {colony.colony_code}
                     </div>
                   )}
-                  {/* ✅ MODIFICADO: Mostrar todos los períodos sin temporada */}
+                  
+                  {/* ✅ TEMPORADA ARRIBA */}
+                  {colony.period_dates && colony.period_dates.length > 0 && colony.period_dates[0].season_desc && (
+                    <div className="text-xs text-muted-foreground bg-green-50 px-2 py-1 rounded">
+                      Temporada: {colony.period_dates[0].season_desc}
+                    </div>
+                  )}
+                  
+                  {/* ✅ PERÍODOS ABAJO */}
                   <div className="text-xs text-muted-foreground bg-blue-50 px-2 py-1 rounded">
-                    <div className="font-medium mb-1">Período 1: {formatPeriodo(colony.periodo_desde, colony.periodo_hasta)}</div>
-                    
-                    {/* ✅ PERÍODOS ADICIONALES: Solo fecha, sin temporada */}
-                    {colony.period_dates && colony.period_dates.length > 0 && (
+                    {colony.period_dates && colony.period_dates.length > 0 ? (
                       <div className="space-y-1">
                         {colony.period_dates.map((period: any, index: number) => (
                           <div key={index} className="text-xs">
                             <span className="font-medium">
-                              Período {index + 2}: {/* Solo número del período */}
+                              Período {period.period_number || (index + 1)}: 
                             </span>
-                            {new Date(period.periodo_desde).toLocaleDateString()} - {new Date(period.periodo_hasta).toLocaleDateString()}
+                            {/* ✅ CORREGIDO: Fechas sin conversiones de zona horaria */}
+                            {(() => {
+                              const formatDate = (dateString: string) => {
+                                if (!dateString) return 'N/A'
+                                const [year, month, day] = dateString.split('-')
+                                if (!year || !month || !day) return 'N/A'
+                                return `${day}/${month}/${year}`
+                              }
+                              return `${formatDate(period.periodo_desde)} - ${formatDate(period.periodo_hasta)}`
+                            })()}
                           </div>
                         ))}
                       </div>
+                    ) : (
+                      <div className="font-medium">
+                        Período 1: {formatPeriodo(colony.periodo_desde, colony.periodo_hasta)}
+                      </div>
                     )}
                   </div>
-                  
-                  {colony.season_desc && (
-                    <div className="text-xs text-muted-foreground bg-green-50 px-2 py-1 rounded">
-                      Temporada: {colony.season_desc}
-                    </div>
-                  )}
                 </CardHeader>
                 <CardContent>
                   <div className="flex items-center justify-between mb-4">

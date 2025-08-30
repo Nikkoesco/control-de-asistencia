@@ -61,7 +61,12 @@ export default function AttendancePage() {
   const [isAttendanceSaved, setIsAttendanceSaved] = useState(false)
   const [colonyPeriod, setColonyPeriod] = useState<{ desde: string; hasta: string } | null>(null)
   const [colonyPeriods, setColonyPeriods] = useState<any[]>([])  // ✅ NUEVO: períodos de la colonia
-  const [selectedPeriodId, setSelectedPeriodId] = useState<string>('')  // ✅ NUEVO: período seleccionado
+  // ❌ ELIMINAR: Este estado ya no se necesita
+  // const [selectedPeriodId, setSelectedPeriodId] = useState<string>('')
+  
+  // ✅ MANTENER: Solo estos estados para períodos
+  const [selectedPeriod, setSelectedPeriod] = useState<number>(1)
+  const [currentPeriodData, setCurrentPeriodData] = useState<any>(null)
 
   useEffect(() => {
     checkUserAndFetchData()
@@ -205,17 +210,6 @@ export default function AttendancePage() {
   }, [attendance, students, existingAttendance])
   */
 
-  // ✅ NUEVO: useEffect para detectar cambios en selectedPeriodId
-  useEffect(() => {
-    if (selectedPeriodId && colonyPeriods.length > 0) {
-      const selectedPeriod = colonyPeriods.find(p => p.id === selectedPeriodId)
-      if (selectedPeriod) {
-        console.log('📅 Período seleccionado:', selectedPeriod)
-        setSelectedDate(selectedPeriod.periodo_desde)
-      }
-    }
-  }, [selectedPeriodId, colonyPeriods])
-
   // ✅ NUEVO: useEffect para cargar el período de la colonia
   useEffect(() => {
     if (userProfile?.colony_id && !isAdmin) {
@@ -280,16 +274,18 @@ export default function AttendancePage() {
     }
   }
 
-  const fetchDataByColony = async (colonyId: string) => {
+  // ✅ FUNCIÓN MODIFICADA: Cargar estudiantes del período seleccionado
+  const fetchStudentsByPeriod = async (colonyId: string, periodNumber: number) => {
     try {
       const supabase = createClient()
 
-      console.log('🔍 Iniciando fetchDataByColony para colonia:', colonyId)
+      console.log('🔍 Cargando estudiantes para colonia:', colonyId, 'período:', periodNumber)
 
       const { data: studentsData, error: studentsError } = await supabase
         .from('students')
         .select('*')
         .eq('colony_id', colonyId)
+        .eq('period_number', periodNumber) // ✅ FILTRAR por período
 
       if (studentsError) {
         console.error('❌ Error al obtener estudiantes:', studentsError)
@@ -297,16 +293,103 @@ export default function AttendancePage() {
       }
 
       if (!studentsData || studentsData.length === 0) {
-        console.log('⚠️ No se encontraron estudiantes para esta colonia')
+        console.log('⚠️ No se encontraron estudiantes para este período')
         setStudents([])
-        setIsLoading(false)
         return
       }
 
-      console.log('✅ Estudiantes encontrados para la colonia:', studentsData.length)
-      
-      // ✅ SOLO establecer estudiantes, el useEffect se encarga del resto
+      console.log('✅ Estudiantes encontrados para el período:', studentsData.length)
       setStudents(studentsData)
+      
+    } catch (error) {
+      console.error("Error al cargar estudiantes por período:", error)
+      setStudents([])
+    }
+  }
+
+  // ✅ FUNCIÓN MODIFICADA: Cargar datos del período seleccionado
+  const fetchPeriodData = async (periodNumber: number) => {
+    if (!userProfile?.colony_id) return
+
+    try {
+      const supabase = createClient()
+      
+      const { data: periodData, error: periodError } = await supabase
+        .from('colony_periods')
+        .select('*')
+        .eq('colony_id', userProfile.colony_id)
+        .eq('period_number', periodNumber)
+        .single()
+
+      if (periodError) {
+        console.error('❌ Error al obtener datos del período:', periodError)
+        return
+      }
+
+      if (periodData) {
+        setCurrentPeriodData(periodData)
+        setColonyPeriod({
+          desde: periodData.periodo_desde,
+          hasta: periodData.periodo_hasta
+        })
+
+        console.log('📅 Datos del período cargados:', periodData)
+
+        // ✅ VERIFICAR que la fecha actual esté dentro del período
+        const today = new Date().toISOString().split('T')[0]
+        const startDate = periodData.periodo_desde
+        const endDate = periodData.periodo_hasta
+
+        if (today < startDate || today > endDate) {
+          // Si la fecha actual está fuera del período, usar la fecha de inicio
+          console.log('⚠️ Fecha actual fuera del período, usando fecha de inicio:', startDate)
+          setSelectedDate(startDate)
+        }
+
+        // ✅ CARGAR estudiantes del período seleccionado
+        await fetchStudentsByPeriod(userProfile.colony_id, periodNumber)
+      }
+    } catch (error) {
+      console.error('Error al cargar datos del período:', error)
+    }
+  }
+
+  // ✅ FUNCIÓN: Manejar cambio de período
+  const handlePeriodChange = async (periodNumber: string) => {
+    const periodNum = parseInt(periodNumber)
+    setSelectedPeriod(periodNum)
+    
+    // Limpiar datos actuales
+    setStudents([])
+    setAttendance({})
+    setExistingAttendance({})
+    
+    // Cargar datos del nuevo período
+    await fetchPeriodData(periodNum)
+  }
+
+  // ✅ FUNCIÓN MODIFICADA: fetchDataByColony para usar período seleccionado
+  const fetchDataByColony = async (colonyId: string) => {
+    try {
+      // Primero cargar los períodos disponibles
+      await fetchColonyPeriods()
+      
+      // Luego cargar datos del período seleccionado (por defecto el más reciente)
+      if (colonyPeriods.length > 0) {
+        const latestPeriod = colonyPeriods[colonyPeriods.length - 1]
+        setSelectedPeriod(latestPeriod.period_number)
+        await fetchPeriodData(latestPeriod.period_number)
+      } else {
+        // Si no hay períodos, cargar todos los estudiantes (compatibilidad)
+        const supabase = createClient()
+        const { data: studentsData, error: studentsError } = await supabase
+          .from('students')
+          .select('*')
+          .eq('colony_id', colonyId)
+
+        if (studentsError) throw studentsError
+        setStudents(studentsData || [])
+      }
       
     } catch (error) {
       console.error("Error al cargar datos por colonia:", error)
@@ -316,24 +399,38 @@ export default function AttendancePage() {
     }
   }
 
-  const fetchInitialData = async () => {
+  // ✅ FUNCIÓN MODIFICADA: fetchColonyPeriods para seleccionar período automáticamente
+  const fetchColonyPeriods = async () => {
+    if (!userProfile?.colony_id) return
+    
     try {
       const supabase = createClient()
+      
+      console.log('🔍 Cargando períodos para colonia:', userProfile.colony_id)
+      
+      const { data: periodsData, error: periodsError } = await supabase
+        .from('colony_periods')
+        .select('*')
+        .eq('colony_id', userProfile.colony_id)
+        .order('period_number', { ascending: true })
 
-      const { data: studentsData, error: studentsError } = await supabase
-        .from("students")
-        .select("*")
-        .order("name", { ascending: true })
+      if (periodsError) {
+        console.error('Error cargando períodos:', periodsError)
+        return
+      }
 
-      if (studentsError) throw studentsError
-
-      // ✅ SOLO establecer estudiantes, el useEffect se encarga del resto
-      setStudents(studentsData || [])
+      console.log('📅 Períodos encontrados:', periodsData)
+      setColonyPeriods(periodsData || [])
+      
+      // ✅ AUTO-SELECCIONAR el período más reciente si no hay uno seleccionado
+      if (periodsData && periodsData.length > 0 && !selectedPeriod) {
+        const latestPeriod = periodsData[periodsData.length - 1]
+        setSelectedPeriod(latestPeriod.period_number)
+        await fetchPeriodData(latestPeriod.period_number)
+      }
       
     } catch (error) {
-      console.error("Error al cargar datos:", error)
-    } finally {
-      setIsLoading(false)
+      console.error('Error cargando períodos:', error)
     }
   }
 
@@ -718,51 +815,27 @@ export default function AttendancePage() {
 
   // ✅ NUEVA FUNCIÓN: Obtener fechas REALES con asistencia del período
   const getAttendanceDatesFromPeriod = async () => {
+    if (!currentPeriodData) {
+      console.log('❌ No hay datos del período actual')
+      return []
+    }
+
     try {
-      const supabase = createClient()
-      const periodDates = await getColonyPeriodDates()
+      // ✅ GENERAR fechas del período seleccionado
+      const startDate = new Date(currentPeriodData.periodo_desde)
+      const endDate = new Date(currentPeriodData.periodo_hasta)
+      const dates: string[] = []
       
-      if (periodDates.length === 0) {
-        console.log('⚠️ No hay fechas de período disponibles')
-        return []
+      const currentDate = new Date(startDate)
+      while (currentDate <= endDate) {
+        dates.push(currentDate.toISOString().split('T')[0])
+        currentDate.setDate(currentDate.getDate() + 1)
       }
-
-      // ✅ OBTENER FECHAS REALES que tienen asistencia en este período
-      let { data: datesData, error: datesError } = await supabase
-        .from("colony_attendance")
-        .select("date")
-        .eq("colony_id", userProfile?.colony_id)
-        .in("date", periodDates)
-        .order("date", { ascending: true })
-
-      // ✅ Si hay error, intentar con attendance (fallback)
-      if (datesError) {
-        console.log('⚠️ Error con colony_attendance, intentando con attendance:', datesError)
-        
-        const fallbackResult = await supabase
-          .from("attendance")
-          .select("date")
-          .in("date", periodDates)
-          .order("date", { ascending: true })
-        
-        if (fallbackResult.error) {
-          console.log('❌ Error también con attendance:', fallbackResult.error)
-          throw fallbackResult.error
-        }
-        
-        datesData = fallbackResult.data
-      }
-
-      if (datesError) throw datesError
-
-      // ✅ OBTENER FECHAS ÚNICAS Y ORDENADAS
-      const uniqueDates = [...new Set(datesData?.map(record => record.date) || [])]
-        .sort()
-
-      console.log('📅 Fechas REALES con asistencia en el período:', uniqueDates)
-      return uniqueDates
+      
+      console.log('📅 Fechas generadas del período:', dates)
+      return dates
     } catch (error) {
-      console.error('Error al obtener fechas de asistencia del período:', error)
+      console.error('Error generando fechas del período:', error)
       return []
     }
   }
@@ -955,14 +1028,14 @@ export default function AttendancePage() {
 
   // ✅ CORRECCIÓN: Función para navegar fechas respetando el período
   const navigateDate = (direction: 'prev' | 'next') => {
-    if (!colonyPeriod) return
+    if (!currentPeriodData) return
     
     // ✅ CORRECCIÓN: Crear fechas sin zona horaria
     const [year, month, day] = selectedDate.split('-').map(Number)
     const currentDate = new Date(year, month - 1, day)
     
-    const startDate = new Date(colonyPeriod.desde + 'T00:00:00')
-    const endDate = new Date(colonyPeriod.hasta + 'T00:00:00')
+    const startDate = new Date(currentPeriodData.periodo_desde + 'T00:00:00')
+    const endDate = new Date(currentPeriodData.periodo_hasta + 'T00:00:00')
     
     console.log('📅 Navegando fechas:', {
       fechaActual: selectedDate,
@@ -985,7 +1058,7 @@ export default function AttendancePage() {
         console.log('📅 Navegando a fecha anterior:', dateString)
         setSelectedDate(dateString)
       } else {
-        console.log('⚠️ No se puede ir antes del inicio del período:', colonyPeriod.desde)
+        console.log('⚠️ No se puede ir antes del inicio del período:', currentPeriodData.periodo_desde)
       }
     } else if (direction === 'next') {
       // Permitir ir a días siguientes dentro del período
@@ -1001,21 +1074,21 @@ export default function AttendancePage() {
         console.log('📅 Navegando a fecha siguiente:', dateString)
         setSelectedDate(dateString)
       } else {
-        console.log('⚠️ No se puede ir después del fin del período:', colonyPeriod.hasta)
+        console.log('⚠️ No se puede ir después del fin del período:', currentPeriodData.periodo_hasta)
       }
     }
   }
 
   // ✅ CORRECCIÓN: Función para verificar si una fecha está disponible
   const isDateAvailable = (dateString: string) => {
-    if (!colonyPeriod) return true // Si no hay período, permitir todas las fechas
+    if (!currentPeriodData) return true // Si no hay período, permitir todas las fechas
     
     // ✅ CORRECCIÓN: Crear fecha sin zona horaria
     const [year, month, day] = dateString.split('-').map(Number)
     const date = new Date(year, month - 1, day) // month - 1 porque getMonth() es 0-based
     
-    const startDate = new Date(colonyPeriod.desde + 'T00:00:00')
-    const endDate = new Date(colonyPeriod.hasta + 'T00:00:00')
+    const startDate = new Date(currentPeriodData.periodo_desde + 'T00:00:00')
+    const endDate = new Date(currentPeriodData.periodo_hasta + 'T00:00:00')
     
     // Solo permitir lunes a viernes dentro del período
     const dayOfWeek = date.getDay()
@@ -1038,11 +1111,11 @@ export default function AttendancePage() {
 
   // ✅ CORRECCIÓN: Función para obtener la fecha mínima y máxima
   const getMinMaxDates = () => {
-    if (!colonyPeriod) return { min: null, max: null }
+    if (!currentPeriodData) return { min: null, max: null }
     
     return {
-      min: colonyPeriod.desde,
-      max: colonyPeriod.hasta
+      min: currentPeriodData.periodo_desde,
+      max: currentPeriodData.periodo_hasta
     }
   }
 
@@ -1183,38 +1256,6 @@ export default function AttendancePage() {
     }
   }
 
-  // ✅ CORREGIDA FUNCIÓN: Cargar períodos de la colonia
-  const fetchColonyPeriods = async () => {
-    if (!userProfile?.colony_id) return
-    
-    try {
-      const supabase = createClient()
-      
-      console.log('🔍 Cargando períodos para colonia:', userProfile.colony_id)
-      
-      // ✅ CARGAR: Solo desde colony_periods (nueva estructura)
-      const { data: periodsData, error: periodsError } = await supabase
-        .from('colony_periods')
-        .select('*')
-        .eq('colony_id', userProfile.colony_id)
-        .order('period_number', { ascending: true })
-
-      if (periodsError) {
-        console.error('Error cargando períodos:', periodsError)
-        return
-      }
-
-      console.log('📅 Períodos encontrados:', periodsData)
-      
-      // ✅ SIMPLIFICAR: Solo usar períodos de colony_periods
-      setColonyPeriods(periodsData || [])
-      
-      console.log('📅 Períodos cargados en estado:', periodsData)
-    } catch (error) {
-      console.error('Error cargando períodos:', error)
-    }
-  }
-
   // ✅ LLAMAR: Cargar períodos cuando se monta el componente
   useEffect(() => {
     if (userProfile?.colony_id) {
@@ -1266,7 +1307,66 @@ export default function AttendancePage() {
             </Card>
           )}
 
-          {/* ✅ CORRECCIÓN: Selector de Fecha con restricciones del período */}
+          {/* ✅ NUEVO: Selector de Período */}
+          {colonyPeriods.length > 1 && (
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-lg">Período Activo</CardTitle>
+                    <CardDescription>
+                      Selecciona el período para tomar asistencia
+                    </CardDescription>
+                  </div>
+                  <Select value={selectedPeriod.toString()} onValueChange={handlePeriodChange}>
+                    <SelectTrigger className="w-[300px]">
+                      <SelectValue placeholder="Seleccionar período" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {colonyPeriods.map((period) => (
+                        <SelectItem key={period.id} value={period.period_number.toString()}>
+                          <div className="flex flex-col items-start">
+                            <span className="font-medium">
+                              Período {period.period_number} - {period.season_desc || 'Sin temporada'}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              {formatDate(period.periodo_desde)} - {formatDate(period.periodo_hasta)}
+                            </span>
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </CardHeader>
+              {currentPeriodData && (
+                <CardContent className="pt-0">
+                  <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                    <div className="flex items-center gap-1">
+                      <Calendar className="h-4 w-4" />
+                      <span>
+                        {formatDate(currentPeriodData.periodo_desde)} - {formatDate(currentPeriodData.periodo_hasta)}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Users className="h-4 w-4" />
+                      <span>{students.length} estudiantes</span>
+                    </div>
+                  </div>
+                  
+                  {/* ✅ INDICADOR del período activo */}
+                  <div className="mt-3 inline-flex items-center gap-2 bg-blue-50 border border-blue-200 text-blue-800 px-3 py-1 rounded-md text-sm">
+                    <CheckCircle className="h-4 w-4" />
+                    <span>
+                      Tomando asistencia para: {currentPeriodData.season_desc || `Período ${selectedPeriod}`}
+                    </span>
+                  </div>
+                </CardContent>
+              )}
+            </Card>
+          )}
+
+          {/* ✅ MODIFICADO: Selector de Fecha con restricciones del período seleccionado */}
           <Card>
             <CardContent className="p-6">
               <div className="flex items-center justify-center gap-6">
@@ -1276,9 +1376,9 @@ export default function AttendancePage() {
                   onClick={() => navigateDate('prev')}
                   className="h-12 w-12 p-0 hover:bg-gray-100"
                   disabled={(() => {
-                    if (!colonyPeriod) return false
+                    if (!currentPeriodData) return false
                     const currentDate = new Date(selectedDate)
-                    const startDate = new Date(colonyPeriod.desde)
+                    const startDate = new Date(currentPeriodData.periodo_desde)
                     return currentDate <= startDate
                   })()}
                 >
@@ -1289,9 +1389,9 @@ export default function AttendancePage() {
                   <div className="text-4xl font-bold text-primary">
                     {formatDate(selectedDate)}
                   </div>
-                  {colonyPeriod && (
+                  {currentPeriodData && (
                     <div className="text-sm text-muted-foreground mt-2">
-                      Período: {formatDate(colonyPeriod.desde)} - {formatDate(colonyPeriod.hasta)}
+                      Período {selectedPeriod}: {formatDate(currentPeriodData.periodo_desde)} - {formatDate(currentPeriodData.periodo_hasta)}
                     </div>
                   )}
                 </div>
@@ -1302,9 +1402,9 @@ export default function AttendancePage() {
                   onClick={() => navigateDate('next')}
                   className="h-12 w-12 p-0 hover:bg-gray-100"
                   disabled={(() => {
-                    if (!colonyPeriod) return false
+                    if (!currentPeriodData) return false
                     const currentDate = new Date(selectedDate)
-                    const endDate = new Date(colonyPeriod.hasta)
+                    const endDate = new Date(currentPeriodData.periodo_hasta)
                     return currentDate >= endDate
                   })()}
                 >
@@ -1312,13 +1412,13 @@ export default function AttendancePage() {
                 </Button>
               </div>
               
-              {/* ✅ NUEVO: Indicador de período */}
-              {colonyPeriod && (
+              {/* ✅ INDICADOR de período con información más específica */}
+              {currentPeriodData && (
                 <div className="mt-4 text-center">
                   <div className="inline-flex items-center gap-2 bg-blue-50 border border-blue-200 text-blue-800 px-4 py-2 rounded-md">
                     <Calendar className="h-4 w-4" />
                     <span className="text-sm font-medium">
-                      Solo puedes tomar asistencia en fechas del período de la colonia
+                      Solo puedes tomar asistencia en fechas del {currentPeriodData.season_desc || `Período ${selectedPeriod}`}
                     </span>
                   </div>
                 </div>
@@ -1348,6 +1448,22 @@ export default function AttendancePage() {
             </CardContent>
           </Card>
 
+          {/* ✅ MENSAJE cuando no hay estudiantes en el período */}
+          {!isLoading && students.length === 0 && currentPeriodData && (
+            <Card>
+              <CardContent className="p-8 text-center">
+                <Users className="h-16 w-16 text-muted-foreground mx-auto mb-4" />
+                <h3 className="text-lg font-semibold mb-2">No hay estudiantes en este período</h3>
+                <p className="text-muted-foreground mb-4">
+                  El {currentPeriodData.season_desc || `Período ${selectedPeriod}`} no tiene estudiantes registrados.
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Selecciona otro período o contacta al administrador para cargar estudiantes.
+                </p>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Weekly Report View */}
           {showWeeklyReport && selectedWeek && (
             <WeeklyReportView 
@@ -1355,7 +1471,8 @@ export default function AttendancePage() {
               weekStart={selectedWeek}
               searchTerm={searchTerm}
               onExport={exportWeeklyReport}
-              userProfile={userProfile}  // ← AGREGAR userProfile
+              userProfile={userProfile}
+              currentPeriod={currentPeriodData} // ✅ PASAR datos del período
             />
           )}
 
@@ -1509,25 +1626,8 @@ export default function AttendancePage() {
                       )}
                     </div>
 
-                    {/* ✅ NUEVO: Selector de Período al lado de Filtrar */}
-                    {colonyPeriods.length > 0 && (
-                      <Select value={selectedPeriodId} onValueChange={setSelectedPeriodId}>
-                        <SelectTrigger className="w-48">
-                          <SelectValue placeholder="Seleccionar período" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {colonyPeriods.map((period, index) => (
-                            <SelectItem key={period.id} value={period.id}>
-                              <div className="flex flex-col">
-                                <span className="font-medium">
-                                  Período {index + 1} - {new Date(period.periodo_desde + 'T00:00:00').getDate()}/{new Date(period.periodo_desde + 'T00:00:00').getMonth() + 1} - {new Date(period.periodo_hasta + 'T00:00:00').getDate()}/{new Date(period.periodo_hasta + 'T00:00:00').getMonth() + 1}
-                                </span>
-                              </div>
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
+                    {/* ❌ ELIMINADO: Selector de Período al lado de Filtrar */}
+                    {/* Ya no necesitamos este dropdown porque usamos el selector de período principal arriba */}
                     
                     <div className="flex gap-2 ml-auto">
                       {/* ✅ CORRECCIÓN: Solo mostrar botón de exportar para administradores */}

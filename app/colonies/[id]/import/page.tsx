@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { ArrowLeft, Upload, FileSpreadsheet, Users, CheckCircle, AlertCircle } from "lucide-react"
+import { ArrowLeft, Upload, FileSpreadsheet, Users, CheckCircle, AlertCircle, Calendar, Plus, Edit } from "lucide-react"
 import { useRouter, useParams } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "@/hooks/use-toast"
@@ -68,8 +68,87 @@ export default function ImportExcelPage() {
   const colonyId = params.id as string
   const [currentPeriodNumber, setCurrentPeriodNumber] = useState<number>(1)  // ✅ NUEVO: número del período actual
   
+  // ✅ NUEVO: Estado para período seleccionado
+  const [selectedPeriod, setSelectedPeriod] = useState<number | null>(null)
+  const [availablePeriods, setAvailablePeriods] = useState<any[]>([])
+  const [isCreatingNewPeriod, setIsCreatingNewPeriod] = useState(false)
+  
+  // ✅ FUNCIÓN: Cargar períodos disponibles
+  const fetchAvailablePeriods = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('colony_periods')
+        .select('*')
+        .eq('colony_id', colonyId)
+        .order('period_number', { ascending: true })
+
+      if (error) throw error
+      setAvailablePeriods(data || [])
+      
+      // Si viene de URL con período específico
+      const urlParams = new URLSearchParams(window.location.search)
+      const periodParam = urlParams.get('period')
+      if (periodParam) {
+        setSelectedPeriod(parseInt(periodParam))
+      } else if (data && data.length > 0) {
+        // Seleccionar el período más reciente por defecto
+        setSelectedPeriod(data[data.length - 1].period_number)
+      }
+    } catch (error) {
+      console.error('Error loading periods:', error)
+    }
+  }
+
+  // ✅ FUNCIÓN: Crear nuevo período rápido
+  const createQuickPeriod = async () => {
+    setIsCreatingNewPeriod(true)
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error("Usuario no autenticado")
+
+      const nextPeriodNumber = availablePeriods.length > 0 
+        ? Math.max(...availablePeriods.map(p => p.period_number)) + 1 
+        : 1
+
+      const { data, error } = await supabase
+        .from('colony_periods')
+        .insert({
+          colony_id: colonyId,
+          period_number: nextPeriodNumber,
+          description: `Período ${nextPeriodNumber}`,
+          periodo_desde: new Date().toISOString().split('T')[0],
+          periodo_hasta: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          season_desc: new Date().getFullYear().toString(),
+          created_by: user.id
+        })
+        .select()
+        .single()
+
+      if (error) throw error
+
+      setSelectedPeriod(nextPeriodNumber)
+      await fetchAvailablePeriods()
+      
+      toast({
+        title: "Éxito",
+        description: `Período ${nextPeriodNumber} creado. Ahora puedes cargar el Excel.`
+      })
+    } catch (error) {
+      console.error('Error creating period:', error)
+      toast({
+        title: "Error",
+        description: "No se pudo crear el nuevo período",
+        variant: "destructive"
+      })
+    } finally {
+      setIsCreatingNewPeriod(false)
+    }
+  }
+
+  // ✅ Agregar al useEffect inicial
   useEffect(() => {
     fetchColony()
+    fetchAvailablePeriods()
   }, [])
 
   const fetchColony = async () => {
@@ -312,6 +391,15 @@ export default function ImportExcelPage() {
 
   // ✅ MODIFICADA FUNCIÓN: Importar con period_number
   const handleImport = async () => {
+    if (!selectedPeriod) {
+      toast({
+        title: "Error",
+        description: "Debes seleccionar un período antes de importar",
+        variant: "destructive"
+      })
+      return
+    }
+
     setProcessing(true)
     try {
       const supabase = createClient()
@@ -346,11 +434,11 @@ export default function ImportExcelPage() {
         student_id: row.student_id?.toString().trim() || null,
         colony_id: colonyId,
         season: row.season?.toString().trim() || '2024-2025',
-        period_number: periodNumber,  // ✅ NUEVO: número del período
+        period_number: selectedPeriod,  // ✅ NUEVO: número del período
         created_by: user.id
       }))
 
-      console.log(` Importando ${validData.length} estudiantes para período ${periodNumber}`)
+      console.log(` Importando ${validData.length} estudiantes para período ${selectedPeriod}`)
 
       // ✅ Crear o actualizar estudiantes con period_number
       const processedStudents: any[] = []
@@ -415,7 +503,7 @@ export default function ImportExcelPage() {
           total_records: excelData.length,
           successful_imports: validData.length,
           failed_imports: excelData.length - validData.length,
-          period_number: periodNumber,  // ✅ NUEVO: número del período
+          period_number: selectedPeriod,  // ✅ NUEVO: número del período
           column_mapping: selectedColumns.reduce((acc, col) => {
             acc[col.name] = col.mappedTo
             return acc
@@ -427,7 +515,7 @@ export default function ImportExcelPage() {
 
       toast({
         title: "Éxito",
-        description: `${validData.length} estudiantes importados correctamente en el período ${periodNumber} de la colonia ${colony.name}`
+        description: `${validData.length} estudiantes importados correctamente en el período ${selectedPeriod} de la colonia ${colony.name}`
       })
 
       router.push(`/colonies/${colonyId}`)
@@ -517,6 +605,67 @@ export default function ImportExcelPage() {
       </header>
 
       <main className="container mx-auto px-4 py-8">
+        {/* ✅ NUEVO: Selector de período en la importación */}
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Seleccionar Período para Importación</CardTitle>
+            <CardDescription>
+              Elige el período al que pertenecerán los estudiantes del Excel
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center gap-4">
+              <div className="flex-1">
+                <Label>Período Destino</Label>
+                <Select 
+                  value={selectedPeriod?.toString() || ""} 
+                  onValueChange={(value) => setSelectedPeriod(parseInt(value))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Seleccionar período" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availablePeriods.map((period) => (
+                      <SelectItem key={period.id} value={period.period_number.toString()}>
+                        Período {period.period_number} - {period.season_desc || 'Sin temporada'}
+                        <span className="text-xs text-muted-foreground ml-2">
+                          ({formatPeriodoSimple(period.periodo_desde, period.periodo_hasta)})
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              
+              <div>
+                <Label className="invisible">Acción</Label>
+                <Button 
+                  onClick={createQuickPeriod}
+                  disabled={isCreatingNewPeriod}
+                  variant="outline"
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  {isCreatingNewPeriod ? 'Creando...' : 'Nuevo Período'}
+                </Button>
+              </div>
+            </div>
+            
+            {selectedPeriod && currentPeriodData && (
+              <div className="mt-4 p-4 bg-blue-50 rounded-lg">
+                <h4 className="font-medium text-blue-900">
+                  Período {selectedPeriod} - {currentPeriodData.season_desc}
+                </h4>
+                <p className="text-sm text-blue-700">
+                  {formatPeriodoSimple(currentPeriodData.periodo_desde, currentPeriodData.periodo_hasta)}
+                </p>
+                <p className="text-xs text-blue-600 mt-1">
+                  Los estudiantes del Excel se asignarán a este período
+                </p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
         <div className="max-w-4xl mx-auto">
           {/* Step Indicator */}
           <div className="mb-8">

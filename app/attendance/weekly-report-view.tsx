@@ -20,9 +20,17 @@ interface WeeklyReportViewProps {
   searchTerm: string
   onExport: () => void
   userProfile?: any
+  currentPeriod?: any // ✅ NUEVO: datos del período actual
 }
 
-export default function WeeklyReportView({ students, weekStart, searchTerm, onExport, userProfile }: WeeklyReportViewProps) {
+export default function WeeklyReportView({ 
+  students, 
+  weekStart, 
+  searchTerm, 
+  onExport, 
+  userProfile,
+  currentPeriod // ✅ NUEVO
+}: WeeklyReportViewProps) {
   const [weeklyData, setWeeklyData] = useState<Record<string, Record<string, string>>>({})
   const [isLoading, setIsLoading] = useState(true)
   const [periodDates, setPeriodDates] = useState<string[]>([])
@@ -67,28 +75,33 @@ export default function WeeklyReportView({ students, weekStart, searchTerm, onEx
     }
   }
 
-  const getWeekDates = (weekStart: string) => {
-    console.log('📅 Generando fechas de semana desde:', weekStart)
-    
-    // ✅ CORRECCIÓN: PROCESAR FECHA DE INICIO SIN PROBLEMAS DE ZONA HORARIA
-    const start = new Date(weekStart + 'T00:00:00')
-    const dates = []
-    
-    for (let i = 0; i < 5; i++) {
-      const date = new Date(start)
-      date.setDate(start.getDate() + i)
+  // ✅ FUNCIÓN MODIFICADA: Usar fechas del período en lugar de semana
+  const getWeekDates = (weekStart: string): string[] => {
+    if (!currentPeriod) {
+      // Fallback al comportamiento original
+      const dates: string[] = []
+      const startDate = new Date(weekStart)
       
-      // ✅ FORMATO SEGURO: YYYY-MM-DD
-      const year = date.getFullYear()
-      const month = String(date.getMonth() + 1).padStart(2, '0')
-      const day = String(date.getDate()).padStart(2, '0')
-      const dateString = `${year}-${month}-${day}`
+      for (let i = 0; i < 7; i++) {
+        const date = new Date(startDate)
+        date.setDate(startDate.getDate() + i)
+        dates.push(date.toISOString().split('T')[0])
+      }
       
-      dates.push(dateString)
-      console.log(`📅 Día de semana ${i + 1}: ${dateString} (${date.toDateString()})`)
+      return dates
+    }
+
+    // ✅ USAR fechas del período completo
+    const startDate = new Date(currentPeriod.periodo_desde)
+    const endDate = new Date(currentPeriod.periodo_hasta)
+    const dates: string[] = []
+    
+    const currentDate = new Date(startDate)
+    while (currentDate <= endDate) {
+      dates.push(currentDate.toISOString().split('T')[0])
+      currentDate.setDate(currentDate.getDate() + 1)
     }
     
-    console.log('📅 Fechas de semana generadas:', dates)
     return dates
   }
 

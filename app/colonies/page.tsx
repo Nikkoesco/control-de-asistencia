@@ -1,16 +1,19 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
-import { Plus, Users, Calendar, FileSpreadsheet, Eye, Trash2 } from "lucide-react"
+import { Plus, Users, Calendar, FileSpreadsheet, Eye, Trash2, Upload } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 import { toast } from "@/hooks/use-toast"
+import * as XLSX from 'xlsx'
+import { Checkbox } from "@/components/ui/checkbox"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 interface Colony {
   id: string
@@ -28,6 +31,42 @@ interface Colony {
   // ❌ ELIMINADO: periodo_desde, periodo_hasta, season_desc
 }
 
+interface ExcelColumn {
+  name: string
+  index: number
+  selected: boolean
+  mappedTo: string
+}
+
+interface ExcelRow {
+  [key: string]: any
+}
+
+const COLUMN_MAPPINGS = {
+  'nombre': 'name',
+  'name': 'name',
+  'apellido': 'last_name',
+  'last_name': 'last_name',
+  'lastname': 'last_name',
+  'id': 'student_id',
+  'student_id': 'student_id',
+  'identificacion': 'student_id',
+  'identificacion_estudiante': 'student_id',
+  'colonia': 'colony_id',
+  'colony': 'colony_id',
+  'id_colonia': 'colony_id',
+  'temporada': 'season',
+  'season': 'season',
+  'periodo': 'season',
+  'año': 'season',
+  'email': 'email',
+  'correo': 'email',
+  'grado': 'grade',
+  'grade': 'grade',
+  'seccion': 'section',
+  'section': 'section'
+}
+
 export default function ColoniesPage() {
   const [colonies, setColonies] = useState<Colony[]>([])
   const [loading, setLoading] = useState(true)
@@ -37,13 +76,25 @@ export default function ColoniesPage() {
   const [newColonyCode, setNewColonyCode] = useState("")
   const [newColonyPeriodoDesde, setNewColonyPeriodoDesde] = useState("")
   const [newColonyPeriodoHasta, setNewColonyPeriodoHasta] = useState("")
-  const [newColonySeason, setNewColonySeason] = useState("")  // ✅ NUEVO: estado para temporada
+  const [newColonySeason, setNewColonySeason] = useState("")
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
-  // Agregar estado para confirmación de eliminación
   const [colonyToDelete, setColonyToDelete] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
   
+  // ✅ NUEVOS ESTADOS: Para manejo de Excel en el modal
+  const [excelFile, setExcelFile] = useState<File | null>(null)
+  const [excelData, setExcelData] = useState<ExcelRow[]>([])
+  const [excelColumns, setExcelColumns] = useState<ExcelColumn[]>([])
+  const [excelPreview, setExcelPreview] = useState<ExcelRow[]>([])
+  const [excelStep, setExcelStep] = useState<'upload' | 'columns' | 'preview'>('upload')
+  const [processingExcel, setProcessingExcel] = useState(false)
+  
+  // ✅ NUEVOS ESTADOS: Para el modal de mapeo de columnas
+  const [showColumnMappingModal, setShowColumnMappingModal] = useState(false)
+  const [tempExcelColumns, setTempExcelColumns] = useState<ExcelColumn[]>([])
+
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const supabase = createClient()
   const router = useRouter()
 
@@ -94,111 +145,221 @@ export default function ColoniesPage() {
     }
   }
 
-  // ✅ AGREGAR: Validación para evitar duplicados en la creación de colonia
+  // ✅ FUNCIÓN MEJORADA: Crear colonia con mejor manejo de errores
   const createColony = async () => {
-    if (!newColonyName.trim()) {
+    if (!isFormValid()) {
       toast({
         title: "Error",
-        description: "El nombre de la colonia es obligatorio",
+        description: "Complete todos los campos y cargue el archivo Excel",
         variant: "destructive"
       })
       return
     }
 
-    if (!newColonyPeriodoDesde || !newColonyPeriodoHasta) {
-      toast({
-        title: "Error",
-        description: "El período es obligatorio",
-        variant: "destructive"
-      })
-      return
-    }
-
-    if (new Date(newColonyPeriodoDesde) >= new Date(newColonyPeriodoHasta)) {
-      toast({
-        title: "Error",
-        description: "La fecha de inicio debe ser anterior a la fecha de fin",
-        variant: "destructive"
-      })
-      return
-    }
-
-    setIsCreating(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) throw new Error("Usuario no autenticado")
+      setIsCreating(true)
+      console.log('🔄 Iniciando creación de colonia...')
 
-      // ✅ CORRECCIÓN: Ajustar fechas para evitar problemas de zona horaria
-      const adjustDateForTimezone = (dateString: string) => {
-        try {
-          const [year, month, day] = dateString.split('-').map(Number)
-          const localDate = new Date(year, month - 1, day)
-          const yearStr = localDate.getFullYear()
-          const monthStr = String(localDate.getMonth() + 1).padStart(2, '0')
-          const dayStr = String(localDate.getDate()).padStart(2, '0')
-          return `${yearStr}-${monthStr}-${dayStr}`
-        } catch (error) {
-          console.error('Error ajustando fecha:', error)
-          return dateString
-        }
+      // Validar autenticación
+      const { data: { user }, error: authError } = await supabase.auth.getUser()
+      if (authError) {
+        console.error('❌ Error de autenticación:', authError)
+        throw new Error(`Error de autenticación: ${authError.message}`)
+      }
+      
+      if (!user) {
+        throw new Error("Usuario no autenticado")
       }
 
-      const periodoDesde = adjustDateForTimezone(newColonyPeriodoDesde)
-      const periodoHasta = adjustDateForTimezone(newColonyPeriodoHasta)
+      console.log('✅ Usuario autenticado:', user.id)
 
-      console.log('🔄 Fechas ajustadas:', { desde: periodoDesde, hasta: periodoHasta })
+      // PASO 1: Crear la colonia
+      console.log('🔄 Creando colonia con datos:', {
+        name: newColonyName.trim(),
+        description: newColonyDescription.trim(),
+        colony_code: newColonyCode.trim(),
+        created_by: user.id
+      })
 
-      // ✅ PASO 1: Crear la colonia SIN fechas de período
       const { data: colony, error: colonyError } = await supabase
         .from('colonies')
         .insert({
           name: newColonyName.trim(),
           description: newColonyDescription.trim(),
-          colony_code: newColonyCode.trim() || null,
-          // ❌ ELIMINADO: periodo_desde, periodo_hasta, season_desc
-          period_number: 1,
+          colony_code: newColonyCode.trim(),
           created_by: user.id
         })
         .select()
         .single()
 
-      if (colonyError) throw colonyError
+      if (colonyError) {
+        console.error('❌ Error creando colonia:', {
+          message: colonyError.message,
+          details: colonyError.details,
+          hint: colonyError.hint,
+          code: colonyError.code
+        })
+        throw new Error(`Error creando colonia: ${colonyError.message}`)
+      }
 
-      // ✅ PASO 2: Crear el período inicial en colony_periods
+      console.log('✅ Colonia creada:', colony)
+
+      // PASO 2: Crear el período inicial
+      console.log('🔄 Creando período inicial con datos:', {
+        colony_id: colony.id,
+        period_number: 1,
+        description: newColonyDescription.trim() || 'Período inicial',
+        periodo_desde: newColonyPeriodoDesde,
+        periodo_hasta: newColonyPeriodoHasta,
+        season_desc: newColonySeason.trim(),
+        created_by: user.id
+      })
+
       const { error: periodError } = await supabase
         .from('colony_periods')
         .insert({
           colony_id: colony.id,
           period_number: 1,
           description: newColonyDescription.trim() || 'Período inicial',
-          periodo_desde: periodoDesde,
-          periodo_hasta: periodoHasta,
-          season_desc: newColonySeason.trim() || '2024-2025',
+          periodo_desde: newColonyPeriodoDesde,
+          periodo_hasta: newColonyPeriodoHasta,
+          season_desc: newColonySeason.trim(),
           created_by: user.id
         })
 
       if (periodError) {
-        console.warn('Warning: Could not create initial period:', periodError)
+        console.error('❌ Error creando período:', {
+          message: periodError.message,
+          details: periodError.details,
+          hint: periodError.hint,
+          code: periodError.code
+        })
+        throw new Error(`Error creando período: ${periodError.message}`)
       }
+
+      console.log('✅ Período creado exitosamente')
+
+      // PASO 3: Preparar estudiantes para importar
+      console.log('🔄 Procesando estudiantes del Excel...')
+      console.log('📊 Datos Excel:', excelData.length, 'filas')
+      console.log('📊 Columnas:', excelColumns.map(c => ({ name: c.name, selected: c.selected, mappedTo: c.mappedTo })))
+
+      const studentsToImport = excelData.map((row, index) => {
+        const student: any = {
+          colony_id: colony.id,
+          period_number: 1,
+          created_by: user.id,
+          season: newColonySeason.trim() || '2024-2025' // ✅ AGREGAR: Campo season obligatorio
+        }
+
+        // Mapear columnas seleccionadas
+        excelColumns.forEach(col => {
+          if (col.selected && col.mappedTo !== 'unmapped') {
+            const value = row[col.name]
+            if (value) {
+              if (col.mappedTo === 'name') {
+                // Combinar nombre y apellido si existen por separado
+                const lastName = excelColumns.find(c => c.mappedTo === 'last_name')
+                if (lastName && row[lastName.name]) {
+                  student.name = `${row[lastName.name]}, ${value}`.trim()
+                } else {
+                  student.name = value.toString().trim()
+                }
+              } else if (col.mappedTo === 'season') {
+                // ✅ Si el Excel tiene una columna de temporada, usarla
+                student.season = value.toString().trim()
+              } else if (col.mappedTo !== 'last_name') {
+                student[col.mappedTo] = value.toString().trim()
+              }
+            }
+          }
+        })
+
+        // Validar que tenga al menos nombre
+        if (!student.name) {
+          student.name = `Estudiante ${index + 1}`
+        }
+
+        // ✅ ASEGURAR: Que season siempre tenga un valor
+        if (!student.season) {
+          student.season = newColonySeason.trim() || '2024-2025'
+        }
+
+        console.log(`📝 Estudiante ${index + 1}:`, student)
+        return student
+      }).filter(student => student.name && student.name.trim() !== '')
+
+      console.log('📊 Estudiantes a importar:', studentsToImport.length)
+      console.log('📊 Ejemplo de estudiante:', studentsToImport[0]) // ✅ Ver estructura completa
+
+      if (studentsToImport.length === 0) {
+        throw new Error('No se encontraron estudiantes válidos en el Excel')
+      }
+
+      // PASO 4: Insertar estudiantes
+      console.log('🔄 Insertando estudiantes en la base de datos...')
+      
+      const { data: insertedStudents, error: studentsError } = await supabase
+        .from('students')
+        .insert(studentsToImport)
+        .select()
+
+      if (studentsError) {
+        console.error('❌ Error insertando estudiantes:', {
+          message: studentsError.message,
+          details: studentsError.details,
+          hint: studentsError.hint,
+          code: studentsError.code
+        })
+        throw new Error(`Error insertando estudiantes: ${studentsError.message}`)
+      }
+
+      console.log('✅ Estudiantes insertados:', insertedStudents?.length || 0)
 
       toast({
         title: "Éxito",
-        description: "Colonia creada correctamente con período inicial"
+        description: `Colonia creada con ${insertedStudents?.length || studentsToImport.length} estudiantes importados`
       })
 
+      // Limpiar formulario
       setNewColonyName("")
       setNewColonyDescription("")
       setNewColonyCode("")
       setNewColonyPeriodoDesde("")
       setNewColonyPeriodoHasta("")
       setNewColonySeason("")
+      setExcelFile(null)
+      setExcelData([])
+      setExcelColumns([])
+      setExcelPreview([])
+      setExcelStep('upload')
       setIsCreateDialogOpen(false)
+      
       fetchColonies()
+      
     } catch (error) {
-      console.error('Error creating colony:', error)
+      console.error('❌ Error completo en createColony:', error)
+      
+      // Manejo de errores más específico
+      let errorMessage = "No se pudo crear la colonia"
+      
+      if (error instanceof Error) {
+        errorMessage = error.message
+      } else if (typeof error === 'object' && error !== null) {
+        // Si es un objeto, intentar extraer información útil
+        const errorObj = error as any
+        if (errorObj.message) {
+          errorMessage = errorObj.message
+        } else if (errorObj.details) {
+          errorMessage = errorObj.details
+        } else {
+          errorMessage = JSON.stringify(error)
+        }
+      }
+      
       toast({
         title: "Error",
-        description: "No se pudo crear la colonia",
+        description: errorMessage,
         variant: "destructive"
       })
     } finally {
@@ -233,6 +394,116 @@ export default function ColoniesPage() {
       console.error('Error ajustando fecha:', error)
       return dateString // ✅ Retornar original si hay error
     }
+  }
+
+  // ✅ FUNCIÓN CORREGIDA: Manejar carga de archivo Excel
+  const handleExcelUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    setExcelFile(file)
+    setProcessingExcel(true)
+
+    try {
+      const arrayBuffer = await file.arrayBuffer()
+      const workbook = XLSX.read(arrayBuffer, { type: 'array' })
+      const sheetName = workbook.SheetNames[0]
+      const worksheet = workbook.Sheets[sheetName]
+      
+      // ✅ MEJORADO: Usar defval para evitar celdas undefined y range para limitar filas
+      const jsonData = XLSX.utils.sheet_to_json(worksheet, { 
+        header: 1, 
+        defval: '', // Valor por defecto para celdas vacías
+        raw: false  // Convertir todo a string
+      })
+
+      console.log('📊 Datos brutos del Excel:', jsonData.length, 'filas')
+
+      if (jsonData.length < 2) {
+        throw new Error('El archivo debe tener al menos una fila de encabezados y una fila de datos')
+      }
+
+      const headers = jsonData[0] as string[]
+      console.log('📋 Encabezados encontrados:', headers)
+
+      // ✅ FILTRAR: Solo filas que tengan al menos un valor no vacío
+      const allRows = jsonData.slice(1) as any[][]
+      const validRows = allRows.filter(row => {
+        // Una fila es válida si tiene al menos una celda con contenido
+        return row && row.some(cell => cell && cell.toString().trim() !== '')
+      })
+
+      console.log('📊 Filas válidas encontradas:', validRows.length)
+      console.log('📊 Ejemplo de filas válidas:', validRows.slice(0, 3))
+
+      if (validRows.length === 0) {
+        throw new Error('No se encontraron filas con datos válidos en el Excel')
+      }
+
+      // Crear estructura de columnas
+      const columns: ExcelColumn[] = headers.map((header, index) => ({
+        name: header,
+        index,
+        selected: true,
+        mappedTo: COLUMN_MAPPINGS[header.toLowerCase()] || 'unmapped'
+      }))
+
+      // ✅ CONVERTIR: Solo las filas válidas a objetos
+      const data: ExcelRow[] = validRows.map(row => {
+        const obj: ExcelRow = {}
+        headers.forEach((header, index) => {
+          obj[header] = row[index] ? row[index].toString().trim() : ''
+        })
+        return obj
+      })
+
+      console.log('📊 Datos procesados:', data.length, 'estudiantes')
+      console.log('📊 Ejemplo de datos:', data.slice(0, 2))
+
+      setExcelData(data)
+      setExcelPreview(data.slice(0, 5))
+      setTempExcelColumns(columns)
+      setShowColumnMappingModal(true)
+
+    } catch (error) {
+      console.error('Error processing Excel:', error)
+      toast({
+        title: "Error",
+        description: "No se pudo procesar el archivo Excel",
+        variant: "destructive"
+      })
+    } finally {
+      setProcessingExcel(false)
+    }
+  }
+
+  // ✅ NUEVA FUNCIÓN: Confirmar mapeo de columnas
+  const confirmColumnMapping = () => {
+    setExcelColumns(tempExcelColumns)
+    setExcelStep('preview')
+    setShowColumnMappingModal(false)
+  }
+
+  // ✅ NUEVA FUNCIÓN: Cancelar mapeo de columnas
+  const cancelColumnMapping = () => {
+    setShowColumnMappingModal(false)
+    setExcelStep('upload')
+    setExcelFile(null)
+    setExcelData([])
+    setTempExcelColumns([])
+  }
+
+  // ✅ NUEVA FUNCIÓN: Validar que los datos estén completos
+  const isFormValid = () => {
+    const basicInfoValid = newColonyName.trim() && 
+                          newColonyCode.trim() && 
+                          newColonyPeriodoDesde && 
+                          newColonyPeriodoHasta && 
+                          newColonySeason.trim()
+    
+    const excelValid = excelFile && excelData.length > 0 && excelStep === 'preview'
+    
+    return basicInfoValid && excelValid
   }
 
   const openColony = (colonyId: string) => {
@@ -551,6 +822,7 @@ export default function ColoniesPage() {
             </p>
           </div>
           
+          {/* ✅ MODAL MEJORADO: Con carga de Excel integrada */}
           <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
             <DialogTrigger asChild>
               <Button>
@@ -558,96 +830,350 @@ export default function ColoniesPage() {
                 Nueva Colonia
               </Button>
             </DialogTrigger>
-            <DialogContent>
+            <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>Crear Nueva Colonia</DialogTitle>
                 <DialogDescription>
-                  Crea una nueva colonia para organizar estudiantes
+                  Configure la colonia y cargue el archivo Excel con los estudiantes
                 </DialogDescription>
               </DialogHeader>
-              <div className="grid gap-4 py-4">
-                <div className="grid gap-2">
-                  <Label htmlFor="name">Nombre de la Colonia *</Label>
-                  <Input
-                    id="name"
-                    value={newColonyName}
-                    onChange={(e) => setNewColonyName(e.target.value)}
-                    placeholder="Ej: Colonia Gutierrez"
-                    required
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="code">Código de la Colonia *</Label>
-                  <Input
-                    id="code"
-                    value={newColonyCode}
-                    onChange={(e) => setNewColonyCode(e.target.value)}
-                    placeholder="Ej: 2346"
-                    required
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="periodo">Período *</Label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <Label htmlFor="periodo_desde" className="text-xs">Desde *</Label>
+              
+              <div className="grid gap-6 py-4">
+                {/* SECCIÓN 1: Información básica */}
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold">Información de la Colonia</h3>
+                  
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="grid gap-2">
+                      <Label htmlFor="name">Nombre de la Colonia *</Label>
                       <Input
-                        id="periodo_desde"
-                        type="date"
-                        value={newColonyPeriodoDesde}
-                        onChange={(e) => setNewColonyPeriodoDesde(e.target.value)}
+                        id="name"
+                        value={newColonyName}
+                        onChange={(e) => setNewColonyName(e.target.value)}
+                        placeholder="Ej: Colonia Gutierrez"
                         required
                       />
                     </div>
-                    <div>
-                      <Label htmlFor="periodo_hasta" className="text-xs">Hasta *</Label>
+                    <div className="grid gap-2">
+                      <Label htmlFor="code">Código de la Colonia *</Label>
                       <Input
-                        id="periodo_hasta"
-                        type="date"
-                        value={newColonyPeriodoHasta}
-                        onChange={(e) => setNewColonyPeriodoHasta(e.target.value)}
+                        id="code"
+                        value={newColonyCode}
+                        onChange={(e) => setNewColonyCode(e.target.value)}
+                        placeholder="Ej: 2346"
                         required
                       />
                     </div>
                   </div>
-                  {newColonyPeriodoDesde && newColonyPeriodoHasta && (
-                    <p className="text-xs text-muted-foreground">
-                      Duración: {calculateDays(newColonyPeriodoDesde, newColonyPeriodoHasta)} días
-                    </p>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="periodo">Período *</Label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <Label htmlFor="periodo_desde" className="text-xs">Desde *</Label>
+                        <Input
+                          id="periodo_desde"
+                          type="date"
+                          value={newColonyPeriodoDesde}
+                          onChange={(e) => setNewColonyPeriodoDesde(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor="periodo_hasta" className="text-xs">Hasta *</Label>
+                        <Input
+                          id="periodo_hasta"
+                          type="date"
+                          value={newColonyPeriodoHasta}
+                          onChange={(e) => setNewColonyPeriodoHasta(e.target.value)}
+                          required
+                        />
+                      </div>
+                    </div>
+                    {newColonyPeriodoDesde && newColonyPeriodoHasta && (
+                      <p className="text-xs text-muted-foreground">
+                        Duración: {calculateDays(newColonyPeriodoDesde, newColonyPeriodoHasta)} días
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="grid gap-2">
+                      <Label htmlFor="season">Temporada *</Label>
+                      <Input
+                        id="season"
+                        value={newColonySeason}
+                        onChange={(e) => setNewColonySeason(e.target.value)}
+                        placeholder="Ej: Verano 2024, Invierno 2025"
+                        required
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="description">Descripción</Label>
+                      <Input
+                        id="description"
+                        value={newColonyDescription}
+                        onChange={(e) => setNewColonyDescription(e.target.value)}
+                        placeholder="Descripción opcional"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* SECCIÓN 2: Carga de Excel - SIMPLIFICADA */}
+                <div className="space-y-4 border-t pt-4">
+                  <h3 className="text-lg font-semibold">Archivo de Estudiantes</h3>
+                  
+                  {excelStep === 'upload' && (
+                    <div className="space-y-4">
+                      <div className="border-2 border-dashed border-muted-foreground/25 rounded-lg p-8 text-center">
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          accept=".xlsx,.xls"
+                          onChange={handleExcelUpload}
+                          className="hidden"
+                        />
+                        <Upload className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                        <h3 className="text-lg font-semibold mb-2">Cargar archivo Excel *</h3>
+                        <p className="text-muted-foreground mb-4">
+                          Selecciona un archivo .xlsx o .xls con los datos de los estudiantes
+                        </p>
+                        <Button 
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={processingExcel}
+                        >
+                          {processingExcel ? 'Procesando...' : 'Seleccionar Archivo'}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {excelStep === 'preview' && excelPreview.length > 0 && (
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-medium">✅ Archivo cargado ({excelData.length} estudiantes válidos)</h4>
+                        <div className="space-x-2">
+                          <Button 
+                            variant="outline" 
+                            size="sm"
+                            onClick={() => setShowColumnMappingModal(true)}
+                          >
+                            Editar Mapeo
+                          </Button>
+                          <Button 
+                            variant="outline" 
+                            size="sm"
+                            onClick={() => {
+                              setExcelStep('upload')
+                              setExcelFile(null)
+                              setExcelData([])
+                              setExcelColumns([])
+                            }}
+                          >
+                            Cambiar Archivo
+                          </Button>
+                        </div>
+                      </div>
+                      
+                      <div className="border rounded-lg overflow-hidden">
+                        <div className="overflow-x-auto max-h-40">
+                          <table className="w-full text-sm">
+                            <thead className="bg-muted">
+                              <tr>
+                                {excelColumns.filter(col => col.selected).map((col, index) => (
+                                  <th key={index} className="p-2 text-left font-medium">
+                                    {col.name} → {col.mappedTo}
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {excelPreview.map((row, rowIndex) => (
+                                <tr key={rowIndex} className="border-t">
+                                  {excelColumns.filter(col => col.selected).map((col, colIndex) => (
+                                    <td key={colIndex} className="p-2">
+                                      {row[col.name] || '-'}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
                   )}
                 </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="season">Temporada *</Label>
-                  <Input
-                    id="season"
-                    value={newColonySeason}
-                    onChange={(e) => setNewColonySeason(e.target.value)}
-                    placeholder="Ej: Verano 2024, Invierno 2025, etc."
-                    required
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="description">Descripción</Label>
-                  <Textarea
-                    id="description"
-                    value={newColonyDescription}
-                    onChange={(e) => setNewColonyDescription(e.target.value)}
-                    placeholder="Descripción opcional de la colonia"
-                    rows={3}
-                  />
-                </div>
               </div>
+
               <DialogFooter>
                 <Button variant="outline" onClick={() => setIsCreateDialogOpen(false)}>
                   Cancelar
                 </Button>
-                <Button onClick={createColony} disabled={isCreating}>
-                  {isCreating ? "Creando..." : "Crear Colonia"}
+                <Button 
+                  onClick={createColony} 
+                  disabled={isCreating || !isFormValid()}
+                >
+                  {isCreating ? "Creando..." : "Crear Colonia e Importar"}
                 </Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
         </div>
+
+        {/* ✅ NUEVO MODAL: Para mapeo de columnas (más grande) */}
+        <Dialog open={showColumnMappingModal} onOpenChange={setShowColumnMappingModal}>
+          <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Mapear Columnas del Excel</DialogTitle>
+              <DialogDescription>
+                Selecciona qué columnas importar y cómo mapearlas a los campos del sistema
+              </DialogDescription>
+            </DialogHeader>
+            
+            <div className="py-4">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-medium">Columnas encontradas: {tempExcelColumns.length}</h4>
+                  <div className="space-x-2">
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => {
+                        const newColumns = tempExcelColumns.map(col => ({ ...col, selected: true }))
+                        setTempExcelColumns(newColumns)
+                      }}
+                    >
+                      Seleccionar Todas
+                    </Button>
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => {
+                        const newColumns = tempExcelColumns.map(col => ({ ...col, selected: false }))
+                        setTempExcelColumns(newColumns)
+                      }}
+                    >
+                      Deseleccionar Todas
+                    </Button>
+                  </div>
+                </div>
+                
+                <div className="border rounded-lg overflow-hidden">
+                  <div className="max-h-96 overflow-y-auto">
+                    <table className="w-full">
+                      <thead className="bg-muted sticky top-0">
+                        <tr>
+                          <th className="p-3 text-left font-medium w-16">Usar</th>
+                          <th className="p-3 text-left font-medium">Columna del Excel</th>
+                          <th className="p-3 text-left font-medium">Datos de Ejemplo</th>
+                          <th className="p-3 text-left font-medium w-48">Mapear a Campo</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tempExcelColumns.map((column, index) => (
+                          <tr key={index} className="border-t hover:bg-muted/50">
+                            <td className="p-3">
+                              <Checkbox
+                                checked={column.selected}
+                                onCheckedChange={(checked) => {
+                                  const newColumns = [...tempExcelColumns]
+                                  newColumns[index].selected = checked as boolean
+                                  setTempExcelColumns(newColumns)
+                                }}
+                              />
+                            </td>
+                            <td className="p-3">
+                              <span className="font-medium">{column.name}</span>
+                            </td>
+                            <td className="p-3 text-sm text-muted-foreground">
+                              {excelPreview.slice(0, 3).map((row, rowIndex) => (
+                                <div key={rowIndex} className="truncate max-w-32">
+                                  {row[column.name] || '-'}
+                                </div>
+                              ))}
+                            </td>
+                            <td className="p-3">
+                              <Select
+                                value={column.mappedTo}
+                                onValueChange={(value) => {
+                                  const newColumns = [...tempExcelColumns]
+                                  newColumns[index].mappedTo = value
+                                  setTempExcelColumns(newColumns)
+                                }}
+                                disabled={!column.selected}
+                              >
+                                <SelectTrigger className="w-full">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="name">📝 Nombre Completo</SelectItem>
+                                  <SelectItem value="last_name">👤 Apellido</SelectItem>
+                                  <SelectItem value="student_id">🆔 ID/Cédula Estudiante</SelectItem>
+                                  <SelectItem value="email">📧 Email</SelectItem>
+                                  <SelectItem value="grade">🎓 Grado/Curso</SelectItem>
+                                  <SelectItem value="section">📚 Sección</SelectItem>
+                                  <SelectItem value="season">📅 Temporada/Año</SelectItem>
+                                  <SelectItem value="unmapped">❌ No mapear</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Vista previa de datos mapeados */}
+                {tempExcelColumns.some(col => col.selected) && (
+                  <div className="space-y-2">
+                    <h5 className="font-medium">Vista Previa de Datos Mapeados:</h5>
+                    <div className="border rounded-lg overflow-hidden">
+                      <div className="overflow-x-auto max-h-32">
+                        <table className="w-full text-sm">
+                          <thead className="bg-muted">
+                            <tr>
+                              {tempExcelColumns.filter(col => col.selected && col.mappedTo !== 'unmapped').map((col, index) => (
+                                <th key={index} className="p-2 text-left font-medium">
+                                  {col.mappedTo}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {excelPreview.slice(0, 3).map((row, rowIndex) => (
+                              <tr key={rowIndex} className="border-t">
+                                {tempExcelColumns.filter(col => col.selected && col.mappedTo !== 'unmapped').map((col, colIndex) => (
+                                  <td key={colIndex} className="p-2">
+                                    {row[col.name] || '-'}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={cancelColumnMapping}>
+                Cancelar
+              </Button>
+              <Button 
+                onClick={confirmColumnMapping}
+                disabled={!tempExcelColumns.some(col => col.selected)}
+              >
+                Confirmar Mapeo ({tempExcelColumns.filter(col => col.selected).length} columnas)
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {colonies.length === 0 ? (
           <Card className="text-center py-12">

@@ -65,7 +65,8 @@ export default function AttendancePage() {
   // const [selectedPeriodId, setSelectedPeriodId] = useState<string>('')
   
   // ✅ MANTENER: Solo estos estados para períodos
-  const [selectedPeriod, setSelectedPeriod] = useState<number>(1)
+  // ✅ CAMBIO: Inicializar selectedPeriod como null para detectar cuando no se ha seleccionado
+  const [selectedPeriod, setSelectedPeriod] = useState<number | null>(null)
   const [currentPeriodData, setCurrentPeriodData] = useState<any>(null)
 
   useEffect(() => {
@@ -399,7 +400,7 @@ export default function AttendancePage() {
     }
   }
 
-  // ✅ FUNCIÓN MODIFICADA: fetchColonyPeriods para seleccionar período automáticamente
+  // ✅ FUNCIÓN MODIFICADA: fetchColonyPeriods para manejar correctamente la inicialización
   const fetchColonyPeriods = async () => {
     if (!userProfile?.colony_id) return
     
@@ -422,8 +423,8 @@ export default function AttendancePage() {
       console.log('📅 Períodos encontrados:', periodsData)
       setColonyPeriods(periodsData || [])
       
-      // ✅ AUTO-SELECCIONAR el período más reciente si no hay uno seleccionado
-      if (periodsData && periodsData.length > 0 && !selectedPeriod) {
+      // ✅ CORRECCIÓN: Solo auto-seleccionar si no hay período seleccionado
+      if (periodsData && periodsData.length > 0 && selectedPeriod === null) {
         const latestPeriod = periodsData[periodsData.length - 1]
         setSelectedPeriod(latestPeriod.period_number)
         await fetchPeriodData(latestPeriod.period_number)
@@ -1257,11 +1258,11 @@ export default function AttendancePage() {
   }
 
   // ✅ LLAMAR: Cargar períodos cuando se monta el componente
-  useEffect(() => {
-    if (userProfile?.colony_id) {
-      fetchColonyPeriods()
-    }
-  }, [userProfile?.colony_id])
+  // useEffect(() => {
+  //   if (userProfile?.colony_id) {
+  //     fetchColonyPeriods()
+  //   }
+  // }, [userProfile?.colony_id])
 
   if (isLoading) {
     return (
@@ -1318,21 +1319,14 @@ export default function AttendancePage() {
                       Selecciona el período para tomar asistencia
                     </CardDescription>
                   </div>
-                  <Select value={selectedPeriod.toString()} onValueChange={handlePeriodChange}>
+                  <Select value={selectedPeriod?.toString() || ""} onValueChange={handlePeriodChange}>
                     <SelectTrigger className="w-[300px]">
                       <SelectValue placeholder="Seleccionar período" />
                     </SelectTrigger>
                     <SelectContent>
                       {colonyPeriods.map((period) => (
                         <SelectItem key={period.id} value={period.period_number.toString()}>
-                          <div className="flex flex-col items-start">
-                            <span className="font-medium">
-                              Período {period.period_number} - {period.season_desc || 'Sin temporada'}
-                            </span>
-                            <span className="text-xs text-muted-foreground">
-                              {formatDate(period.periodo_desde)} - {formatDate(period.periodo_hasta)}
-                            </span>
-                          </div>
+                          Período {period.period_number}: {period.season_desc || `${formatDate(period.periodo_desde)} - ${formatDate(period.periodo_hasta)}`}
                         </SelectItem>
                       ))}
                     </SelectContent>

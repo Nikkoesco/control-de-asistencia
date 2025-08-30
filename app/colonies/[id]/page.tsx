@@ -130,6 +130,19 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
   const [showPeriodColumnMappingModal, setShowPeriodColumnMappingModal] = useState(false)
   const [tempPeriodExcelColumns, setTempPeriodExcelColumns] = useState<ExcelColumn[]>([])
 
+  // ✅ NUEVOS ESTADOS para editar y eliminar períodos
+  const [showEditPeriodModal, setShowEditPeriodModal] = useState(false)
+  const [showDeletePeriodModal, setShowDeletePeriodModal] = useState(false)
+  const [periodToEdit, setPeriodToEdit] = useState<any>(null)
+  const [periodToDelete, setPeriodToDelete] = useState<any>(null)
+  const [editPeriodData, setEditPeriodData] = useState({
+    season_desc: '',
+    periodo_desde: '',
+    periodo_hasta: ''
+  })
+  const [isUpdatingPeriod, setIsUpdatingPeriod] = useState(false)
+  const [isDeletingPeriod, setIsDeletingPeriod] = useState(false)
+
   const periodFileInputRef = useRef<HTMLInputElement>(null)
 
   const supabase = createClient()
@@ -1345,6 +1358,157 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
     }
   }
 
+  // ✅ NUEVA FUNCIÓN: Abrir modal para editar período
+  const openEditPeriodModal = (period: any) => {
+    setPeriodToEdit(period)
+    setEditPeriodData({
+      season_desc: period.season_desc || '',
+      periodo_desde: period.periodo_desde || '',
+      periodo_hasta: period.periodo_hasta || ''
+    })
+    setShowEditPeriodModal(true)
+  }
+
+  // ✅ NUEVA FUNCIÓN: Actualizar período
+  const updatePeriod = async () => {
+    if (!periodToEdit) return
+
+    try {
+      setIsUpdatingPeriod(true)
+
+      // Validar fechas
+      if (!editPeriodData.periodo_desde || !editPeriodData.periodo_hasta) {
+        throw new Error("Las fechas de inicio y fin son obligatorias")
+      }
+
+      const fechaDesde = new Date(editPeriodData.periodo_desde)
+      const fechaHasta = new Date(editPeriodData.periodo_hasta)
+
+      if (fechaDesde >= fechaHasta) {
+        throw new Error("La fecha de inicio debe ser anterior a la fecha de fin")
+      }
+
+      // Actualizar período en la base de datos
+      const { error } = await supabase
+        .from('colony_periods')
+        .update({
+          season_desc: editPeriodData.season_desc.trim(),
+          periodo_desde: editPeriodData.periodo_desde,
+          periodo_hasta: editPeriodData.periodo_hasta,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', periodToEdit.id)
+
+      if (error) throw error
+
+      // Recargar períodos
+      await fetchPeriods()
+
+      // Cerrar modal
+      setShowEditPeriodModal(false)
+      setPeriodToEdit(null)
+
+      toast({
+        title: "¡Período actualizado!",
+        description: "Los cambios se guardaron correctamente",
+      })
+
+    } catch (error) {
+      console.error('Error actualizando período:', error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "No se pudo actualizar el período",
+        variant: "destructive"
+      })
+    } finally {
+      setIsUpdatingPeriod(false)
+    }
+  }
+
+  // ✅ NUEVA FUNCIÓN: Abrir modal para eliminar período
+  const openDeletePeriodModal = (period: any) => {
+    setPeriodToDelete(period)
+    setShowDeletePeriodModal(true)
+  }
+
+  // ✅ NUEVA FUNCIÓN: Eliminar período
+  const deletePeriod = async () => {
+    if (!periodToDelete) return
+
+    try {
+      setIsDeletingPeriod(true)
+
+      // Verificar si hay estudiantes en este período
+      const { data: studentsInPeriod, error: studentsError } = await supabase
+        .from('students')
+        .select('id')
+        .eq('colony_id', colonyId)
+        .eq('period_number', periodToDelete.period_number)
+
+      if (studentsError) throw studentsError
+
+      if (studentsInPeriod && studentsInPeriod.length > 0) {
+        // Si hay estudiantes, eliminarlos primero
+        const { error: deleteStudentsError } = await supabase
+          .from('students')
+          .delete()
+          .eq('colony_id', colonyId)
+          .eq('period_number', periodToDelete.period_number)
+
+        if (deleteStudentsError) throw deleteStudentsError
+
+        // También eliminar registros de asistencia
+        const { error: deleteAttendanceError } = await supabase
+          .from('colony_attendance')
+          .delete()
+          .eq('colony_id', colonyId)
+          .eq('period_number', periodToDelete.period_number)
+
+        if (deleteAttendanceError) {
+          console.warn('Error eliminando asistencia:', deleteAttendanceError)
+        }
+      }
+
+      // Eliminar el período
+      const { error: deletePeriodError } = await supabase
+        .from('colony_periods')
+        .delete()
+        .eq('id', periodToDelete.id)
+
+      if (deletePeriodError) throw deletePeriodError
+
+      // Recargar períodos
+      await fetchPeriods()
+
+      // Si el período eliminado era el seleccionado, seleccionar otro
+      if (selectedPeriod === periodToDelete.period_number) {
+        const remainingPeriods = periods.filter(p => p.id !== periodToDelete.id)
+        if (remainingPeriods.length > 0) {
+          setSelectedPeriod(remainingPeriods[0].period_number)
+        }
+      }
+
+      // Cerrar modal
+      setShowDeletePeriodModal(false)
+      setPeriodToDelete(null)
+
+      toast({
+        title: "¡Período eliminado!",
+        description: `Se eliminó el período ${periodToDelete.period_number} y todos sus datos asociados`,
+      })
+
+    } catch (error) {
+      console.error('Error eliminando período:', error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "No se pudo eliminar el período",
+        variant: "destructive"
+      })
+    } finally {
+      setIsDeletingPeriod(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
@@ -1409,7 +1573,7 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
             </CardContent>
           </Card>
 
-          {/* Card 2: NUEVA - Selector de Período */}
+          {/* Card 2: MODIFICADA - Selector de Período con botones de editar/eliminar */}
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">Período Activo</CardTitle>
@@ -1417,7 +1581,7 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
             </CardHeader>
             <CardContent>
               {periods.length > 0 ? (
-                <div className="space-y-2">
+                <div className="space-y-3">
                   <Select value={selectedPeriod.toString()} onValueChange={handlePeriodChange}>
                     <SelectTrigger className="w-full">
                       <SelectValue placeholder="Seleccionar período" />
@@ -1440,6 +1604,22 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
                       ))}
                     </SelectContent>
                   </Select>
+                  
+                  {/* ✅ NUEVOS BOTONES: Editar y Eliminar período (solo para admin) */}
+                  {isAdmin && (
+                   <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const currentPeriod = periods.find(p => p.period_number === selectedPeriod)
+                          if (currentPeriod) openDeletePeriodModal(currentPeriod)
+                        }}
+                        className="w-full text-red-600 hover:text-red-700 hover:bg-red-50"
+                      >
+                        <Trash2 className="h-4 w-4 mr-1" />
+                        Eliminar Período
+                      </Button>
+                  )}
                 </div>
               ) : (
                 <div className="text-center">
@@ -2066,6 +2246,134 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
           </CardContent>
         </Card>
       )}
+
+      {/* ✅ NUEVO MODAL: Editar Período */}
+      <Dialog open={showEditPeriodModal} onOpenChange={setShowEditPeriodModal}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Editar Período {periodToEdit?.period_number}</DialogTitle>
+            <DialogDescription>
+              Modifica los datos del período seleccionado
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="edit-season-desc">Descripción del período</Label>
+              <Input
+                id="edit-season-desc"
+                value={editPeriodData.season_desc}
+                onChange={(e) => setEditPeriodData(prev => ({ ...prev, season_desc: e.target.value }))}
+                placeholder="Ej: Primer Semestre 2024"
+              />
+            </div>
+            
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="edit-periodo-desde">Fecha de inicio</Label>
+                <Input
+                  id="edit-periodo-desde"
+                  type="date"
+                  value={editPeriodData.periodo_desde}
+                  onChange={(e) => setEditPeriodData(prev => ({ ...prev, periodo_desde: e.target.value }))}
+                />
+              </div>
+              <div>
+                <Label htmlFor="edit-periodo-hasta">Fecha de fin</Label>
+                <Input
+                  id="edit-periodo-hasta"
+                  type="date"
+                  value={editPeriodData.periodo_hasta}
+                  onChange={(e) => setEditPeriodData(prev => ({ ...prev, periodo_hasta: e.target.value }))}
+                />
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => setShowEditPeriodModal(false)}
+              disabled={isUpdatingPeriod}
+            >
+              Cancelar
+            </Button>
+            <Button 
+              onClick={updatePeriod}
+              disabled={isUpdatingPeriod}
+            >
+              {isUpdatingPeriod ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Guardando...
+                </>
+              ) : (
+                'Guardar Cambios'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ✅ NUEVO MODAL: Confirmar Eliminación de Período */}
+      <Dialog open={showDeletePeriodModal} onOpenChange={setShowDeletePeriodModal}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-red-600">Eliminar Período {periodToDelete?.period_number}</DialogTitle>
+            <DialogDescription>
+              Esta acción no se puede deshacer. Se eliminarán:
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-2 text-sm text-muted-foreground">
+            <div className="flex items-center gap-2">
+              <XCircle className="h-4 w-4 text-red-500" />
+              <span>El período y sus fechas</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <XCircle className="h-4 w-4 text-red-500" />
+              <span>Todos los estudiantes del período</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <XCircle className="h-4 w-4 text-red-500" />
+              <span>Todos los registros de asistencia</span>
+            </div>
+          </div>
+
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+            <p className="text-sm text-red-800 font-medium">
+              ¿Estás seguro de que quieres eliminar el período "{periodToDelete?.season_desc || `Período ${periodToDelete?.period_number}`}"?
+            </p>
+          </div>
+
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => setShowDeletePeriodModal(false)}
+              disabled={isDeletingPeriod}
+            >
+              Cancelar
+            </Button>
+            <Button 
+              variant="destructive"
+              onClick={deletePeriod}
+              disabled={isDeletingPeriod}
+            >
+              {isDeletingPeriod ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Eliminando...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Eliminar Período
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

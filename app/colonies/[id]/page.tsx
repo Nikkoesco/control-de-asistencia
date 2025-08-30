@@ -93,16 +93,130 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
     if (colonyId) {
       checkUserRole()
       fetchColonyData()
+      fetchPeriods() // ✅ AGREGAR: Cargar períodos disponibles
     }
   }, [colonyId])
 
-  // ✅ useEffect para generar reporte automáticamente cuando cambien los datos
+  // ✅ CORREGIDO: useEffect para generar reporte automáticamente
   useEffect(() => {
-    if (colony && students.length > 0) {
-      // ✅ GENERAR REPORTE AUTOMÁTICAMENTE
-      generateReport()
+    if (colony && currentPeriodData) {
+      // ✅ GENERAR REPORTE AUTOMÁTICAMENTE - incluso si no hay estudiantes
+      generateReportForSelectedPeriod()
     }
-  }, [colony, students])
+  }, [colony, students, currentPeriodData]) // ✅ AGREGAR currentPeriodData como dependencia
+
+  // ✅ NUEVA FUNCIÓN: Generar reporte para el período seleccionado
+  const generateReportForSelectedPeriod = async () => {
+    try {
+      console.log('🔍 Generando reporte para período seleccionado:', selectedPeriod)
+      
+      if (!colony || !currentPeriodData) {
+        console.log('❌ No hay colonia o período seleccionado')
+        return
+      }
+
+      console.log('📅 Período seleccionado:', currentPeriodData.periodo_desde, 'a', currentPeriodData.periodo_hasta)
+
+      // ✅ GENERAR: Todas las fechas del período seleccionado
+      const dates = generateDateRange(currentPeriodData.periodo_desde, currentPeriodData.periodo_hasta)
+      console.log('📊 Fechas generadas para período', selectedPeriod, ':', dates)
+      
+      // ✅ GUARDAR: Las fechas del período en el estado
+      setPeriodDates(dates)
+
+      // ✅ GENERAR: Reporte con las fechas específicas del período seleccionado
+      await generateReportWithDatesForPeriod(dates, selectedPeriod)
+
+    } catch (error) {
+      console.error('Error generando reporte para período seleccionado:', error)
+    }
+  }
+
+  // ✅ NUEVA FUNCIÓN: Generar reporte para un período específico
+  const generateReportWithDatesForPeriod = async (dates: string[], periodNumber: number) => {
+    try {
+      console.log('📊 Generando reporte COMPLETO para período:', periodNumber)
+      
+      if (!currentPeriodData) {
+        throw new Error('No hay datos del período seleccionado')
+      }
+
+      console.log('📅 PERÍODO SELECCIONADO:')
+      console.log('  - Desde:', currentPeriodData.periodo_desde)
+      console.log('  - Hasta:', currentPeriodData.periodo_hasta)
+      console.log('  - Número:', periodNumber)
+
+      // ✅ PASO 1: Generar TODAS las fechas del período seleccionado
+      const allPeriodDates = generateDateRange(currentPeriodData.periodo_desde, currentPeriodData.periodo_hasta)
+      console.log('📅 FECHAS DEL PERÍODO SELECCIONADO:', allPeriodDates)
+      console.log('  - Total días:', allPeriodDates.length)
+      
+      // ✅ PASO 2: Obtener TODA la asistencia de la colonia para este período
+      const { data: allAttendance, error: attendanceError } = await supabase
+        .from('colony_attendance')
+        .select('date, student_id, status')
+        .eq('colony_id', colonyId)
+        .order('date', { ascending: true })
+
+      if (attendanceError) {
+        console.error('❌ Error obteniendo asistencia:', attendanceError)
+        throw new Error(`Error consultando colony_attendance: ${attendanceError.message}`)
+      }
+
+      console.log('📊 ASISTENCIA OBTENIDA:')
+      console.log('  - Total registros:', allAttendance?.length || 0)
+
+      // ✅ PASO 3: ACTUALIZAR el estado con TODAS las fechas del período seleccionado
+      setPeriodDates(allPeriodDates)
+
+      // ✅ PASO 4: Generar reporte con TODAS las fechas del período seleccionado
+      const reportData = students.map(student => {
+        const attendance: { [key: string]: string } = {}
+        
+        // ✅ INICIALIZAR: TODAS las fechas del período seleccionado con "Sin Marcar"
+        allPeriodDates.forEach(date => {
+          attendance[date] = 'Sin Marcar'
+        })
+        
+        console.log(`👤 PROCESANDO ESTUDIANTE: ${student.name}`)
+        console.log(`  - Fechas inicializadas:`, Object.keys(attendance).length)
+        
+        // ✅ LLENAR: Con la asistencia real de colony_attendance
+        if (allAttendance && allAttendance.length > 0) {
+          allAttendance.forEach(record => {
+            if (record.student_id === student.id) {
+              // ✅ CONVERTIR: Fecha de YYYY-MM-DD a DD/MM/YYYY para mostrar
+              const recordDate = convertDateFormat(record.date)
+              
+              if (attendance.hasOwnProperty(recordDate)) {
+                attendance[recordDate] = record.status
+                console.log(`✅ Asistencia para ${recordDate}: ${record.status}`)
+              } else {
+                console.log(`❌ Fecha ${recordDate} no está en el período seleccionado`)
+              }
+            }
+          })
+        }
+        
+        return {
+          id: student.id,
+          name: student.name,
+          attendance
+        }
+      })
+
+      console.log('📊 REPORTE FINAL GENERADO:')
+      console.log('  - Estudiantes:', reportData.length)
+      console.log('  - Fechas del período:', allPeriodDates.length)
+      console.log('  - Fechas:', allPeriodDates)
+      
+      setReportData(reportData)
+
+    } catch (error) {
+      console.error('❌ Error generando reporte:', error)
+      throw error
+    }
+  }
 
   const checkUserRole = async () => {
     try {
@@ -761,90 +875,7 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
     setShowNewPeriodModal(true)
   }
 
-  // ✅ MODIFICADA FUNCIÓN: Crear nuevo período (CORREGIDA)
-  const createNewPeriod = async () => {
-    if (!newPeriodData.periodo_desde || !newPeriodData.periodo_hasta) {
-      toast({
-        title: "Error",
-        description: "El período es obligatorio",
-        variant: "destructive"
-      })
-      return
-    }
-
-    if (!userProfile?.id) {
-      toast({
-        title: "Error",
-        description: "No se pudo obtener el perfil del usuario",
-        variant: "destructive"
-      })
-      return
-    }
-
-    try {
-      setIsCreatingPeriod(true)
-      
-      // ✅ CORRECCIÓN: Obtener el próximo número de período correctamente
-      let nextPeriodNumber = 1
-      
-      if (colonyPeriods && colonyPeriods.length > 0) {
-        // ✅ Obtener el número más alto de período existente
-        const maxPeriodNumber = Math.max(...colonyPeriods.map(p => p.period_number))
-        nextPeriodNumber = maxPeriodNumber + 1
-      }
-      
-      console.log(`🔄 Creando período número ${nextPeriodNumber}`)
-      console.log(`🔄 Períodos existentes:`, colonyPeriods?.map(p => p.period_number))
-      
-      // ✅ CREAR: Nuevo período
-      const { data, error } = await supabase
-        .from('colony_periods')
-        .insert({
-          colony_id: colonyId,
-          period_number: nextPeriodNumber,
-          periodo_desde: newPeriodData.periodo_desde,
-          periodo_hasta: newPeriodData.periodo_hasta,
-          season_desc: newPeriodData.season_desc,
-          description: newPeriodData.description,
-          created_by: userProfile.id
-        })
-        .select()
-        .single()
-
-      if (error) throw error
-
-      toast({
-        title: "Éxito",
-        description: `Nuevo período ${nextPeriodNumber} creado correctamente`,
-      })
-
-      setShowNewPeriodModal(false)
-      setNewPeriodData({
-        name: '',
-        description: '',
-        colony_code: '',
-        periodo_desde: '',
-        periodo_hasta: '',
-        season_desc: ''
-      })
-
-      // ✅ ACTUALIZAR: Lista de períodos y redirigir
-      await fetchColonyPeriods()
-      router.push(`/colonies/${colonyId}/import`)
-      
-    } catch (error) {
-      console.error('Error creating new period:', error)
-      toast({
-        title: "Error",
-        description: "No se pudo crear el nuevo período",
-        variant: "destructive"
-      })
-    } finally {
-      setIsCreatingPeriod(false)
-    }
-  }
-
-  // ✅ NUEVA FUNCIÓN: Calcular días entre fechas (igual que en colonies/page.tsx)
+  // ✅ AGREGAR: Función helper para calcular días entre fechas
   const calculateDays = (desde: string, hasta: string) => {
     if (!desde || !hasta) return 0
     
@@ -858,74 +889,6 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
     
     return diffDays
   }
-
-  // ✅ SIMPLIFICAR: Solo cargar períodos, no crear automáticamente
-  const fetchColonyPeriods = async () => {
-    try {
-      console.log('🔄 fetchColonyPeriods ejecutándose para colonyId:', colonyId);
-      setLoadingPeriods(true)
-      const supabase = createClient()
-      
-      console.log('🔄 Cargando períodos para colonia:', colonyId)
-      
-      const { data, error } = await supabase
-        .from('colony_periods')
-        .select('*')
-        .eq('colony_id', colonyId)
-        .order('period_number', { ascending: true })
-
-      if (error) throw error
-      
-      console.log('✅ Períodos cargados:', data);
-      console.log('✅ Cantidad de períodos:', data?.length || 0);
-      setColonyPeriods(data || [])
-    } catch (error) {
-      console.error('❌ Error en fetchColonyPeriods:', error)
-    } finally {
-      setLoadingPeriods(false)
-    }
-  }
-
-  // ✅ AGREGAR: Función fetchUserProfile que está faltante
-  const fetchUserProfile = async () => {
-    try {
-      const { data: { user }, error: authError } = await supabase.auth.getUser()
-      if (authError || !user) {
-        console.error('Error de autenticación:', authError)
-        return
-      }
-
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', user.id)
-        .single()
-
-      if (profileError) {
-        console.error('Error obteniendo perfil:', profileError)
-        return
-      }
-
-      setUserProfile(profile)
-      console.log('✅ Perfil del usuario cargado:', profile)
-      
-    } catch (error) {
-      console.error('Error en fetchUserProfile:', error)
-    }
-  }
-
-  // ✅ SIMPLIFICAR: Solo cargar períodos al montar el componente
-  useEffect(() => {
-    console.log('🔄 useEffect [colonyId] ejecutándose con colonyId:', colonyId);
-    if (colonyId) {
-      fetchColonyPeriods()
-    }
-  }, [colonyId])
-
-  // ✅ LLAMAR: Obtener perfil cuando se monta el componente
-  useEffect(() => {
-    fetchUserProfile()
-  }, [])
 
   // ✅ AGREGAR: Función helper para formatear fechas sin zona horaria
   const formatPeriodoSimple = (desde: string, hasta: string) => {
@@ -968,13 +931,16 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
         const latestPeriod = data[data.length - 1]
         setSelectedPeriod(latestPeriod.period_number)
         setCurrentPeriodData(latestPeriod)
+        
+        // Cargar estudiantes del período más reciente
+        await fetchStudentsByPeriod(latestPeriod.period_number)
       }
     } catch (error) {
       console.error('Error loading periods:', error)
     }
   }
 
-  // ✅ FUNCIÓN MODIFICADA: Cargar estudiantes del período seleccionado
+  // ✅ FUNCIÓN MEJORADA: Cargar estudiantes del período seleccionado
   const fetchStudentsByPeriod = async (periodNumber: number) => {
     try {
       const { data: studentsData, error: studentsError } = await supabase
@@ -998,7 +964,7 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
     }
   }
 
-  // ✅ FUNCIÓN: Manejar cambio de período
+  // ✅ FUNCIÓN MEJORADA: Manejar cambio de período
   const handlePeriodChange = async (periodNumber: string) => {
     const periodNum = parseInt(periodNumber)
     setSelectedPeriod(periodNum)
@@ -1010,10 +976,14 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
     // Cargar estudiantes del período seleccionado
     await fetchStudentsByPeriod(periodNum)
     
-    // Regenerar fechas del período y reporte
+    // ✅ IMPORTANTE: Generar fechas y reporte inmediatamente, incluso si no hay estudiantes
     if (periodData) {
       const dates = generateDateRange(periodData.periodo_desde, periodData.periodo_hasta)
       setPeriodDates(dates)
+      
+      // ✅ GENERAR REPORTE: Incluso si students está vacío
+      console.log('🔄 Generando reporte para período vacío o con estudiantes')
+      await generateReportWithDatesForPeriod(dates, periodNum)
     }
   }
 
@@ -1029,8 +999,21 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
     const nextPeriodNumber = Math.max(...periods.map(p => p.period_number)) + 1
     
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) throw new Error("Usuario no autenticado")
+      const { data: { user }, error: authError } = await supabase.auth.getUser()
+      if (authError) {
+        console.error('Error de autenticación:', authError)
+        throw new Error(`Error de autenticación: ${authError.message}`)
+      }
+      
+      if (!user) {
+        throw new Error("Usuario no autenticado")
+      }
+
+      console.log('🔄 Creando nuevo período:', {
+        colony_id: colonyId,
+        period_number: nextPeriodNumber,
+        user_id: user.id
+      })
 
       const { data, error } = await supabase
         .from('colony_periods')
@@ -1046,18 +1029,127 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
         .select()
         .single()
 
-      if (error) throw error
+      if (error) {
+        console.error('Error detallado de Supabase:', {
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+          code: error.code
+        })
+        throw error
+      }
+
+      console.log('✅ Período creado exitosamente:', data)
+
+      toast({
+        title: "Éxito",
+        description: `Nuevo período ${nextPeriodNumber} creado correctamente`,
+      })
 
       // Ir a la página de importación con el nuevo período
       router.push(`/colonies/${colonyId}/import?period=${nextPeriodNumber}`)
       
     } catch (error) {
       console.error('Error creating period:', error)
+      
+      // Mostrar error más específico
+      let errorMessage = "No se pudo crear el nuevo período"
+      if (error instanceof Error) {
+        errorMessage = error.message
+      } else if (typeof error === 'object' && error !== null) {
+        errorMessage = JSON.stringify(error)
+      }
+      
+      toast({
+        title: "Error",
+        description: errorMessage,
+        variant: "destructive"
+      })
+    }
+  }
+
+  // ✅ FUNCIÓN CORREGIDA: Manejar importación según el estado de la colonia
+  const handleImportAction = () => {
+    if (!periods.length) {
+      // Si no hay períodos, ir directo a importación para crear el primer período
+      router.push(`/colonies/${colonyId}/import`)
+    } else {
+      // Si ya hay períodos, mostrar modal para configurar nuevo período
+      setShowNewPeriodModal(true)
+    }
+  }
+
+  // ✅ FUNCIÓN CORREGIDA: Crear nuevo período desde modal
+  const createNewPeriod = async () => {
+    if (!newPeriodData.periodo_desde || !newPeriodData.periodo_hasta) {
+      toast({
+        title: "Error",
+        description: "Las fechas del período son obligatorias",
+        variant: "destructive"
+      })
+      return
+    }
+
+    try {
+      setIsCreatingPeriod(true)
+      
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error("Usuario no autenticado")
+
+      // Obtener el próximo número de período
+      const nextPeriodNumber = periods.length > 0 
+        ? Math.max(...periods.map(p => p.period_number)) + 1 
+        : 1
+      
+      console.log(`🔄 Creando período número ${nextPeriodNumber}`)
+      
+      // Crear nuevo período con datos del modal
+      const { data, error } = await supabase
+        .from('colony_periods')
+        .insert({
+          colony_id: colonyId,
+          period_number: nextPeriodNumber,
+          periodo_desde: newPeriodData.periodo_desde,
+          periodo_hasta: newPeriodData.periodo_hasta,
+          season_desc: newPeriodData.season_desc || `Período ${nextPeriodNumber}`,
+          description: newPeriodData.description || `Período ${nextPeriodNumber}`,
+          created_by: user.id
+        })
+        .select()
+        .single()
+
+      if (error) throw error
+
+      toast({
+        title: "Éxito",
+        description: `Período ${nextPeriodNumber} creado correctamente`,
+      })
+
+      setShowNewPeriodModal(false)
+      setNewPeriodData({
+        name: '',
+        description: '',
+        colony_code: '',
+        periodo_desde: '',
+        periodo_hasta: '',
+        season_desc: ''
+      })
+
+      // Actualizar lista de períodos
+      await fetchPeriods()
+      
+      // Ir a la página de importación con el nuevo período
+      router.push(`/colonies/${colonyId}/import?period=${nextPeriodNumber}`)
+      
+    } catch (error) {
+      console.error('Error creating new period:', error)
       toast({
         title: "Error",
         description: "No se pudo crear el nuevo período",
         variant: "destructive"
       })
+    } finally {
+      setIsCreatingPeriod(false)
     }
   }
 
@@ -1109,108 +1201,95 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
       </header>
 
       <main className="container mx-auto px-4 py-8">
-        {/* ✅ NUEVO: Selector de período */}
-        {periods.length > 1 && (
-          <Card className="mb-6">
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle className="text-lg">Período Activo</CardTitle>
-                  <CardDescription>
-                    Selecciona el período que deseas visualizar
-                  </CardDescription>
-                </div>
-                <Select value={selectedPeriod.toString()} onValueChange={handlePeriodChange}>
-                  <SelectTrigger className="w-[300px]">
-                    <SelectValue placeholder="Seleccionar período" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {periods.map((period) => (
-                      <SelectItem key={period.id} value={period.period_number.toString()}>
-                        <div className="flex flex-col items-start">
-                          <span className="font-medium">
-                            Período {period.period_number} - {period.season_desc || 'Sin temporada'}
-                          </span>
-                          <span className="text-xs text-muted-foreground">
-                            {formatPeriodoSimple(period.periodo_desde, period.periodo_hasta)}
-                          </span>
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </CardHeader>
-            {currentPeriodData && (
-              <CardContent className="pt-0">
-                <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                  <div className="flex items-center gap-1">
-                    <Calendar className="h-4 w-4" />
-                    <span>
-                      {formatPeriodoSimple(currentPeriodData.periodo_desde, currentPeriodData.periodo_hasta)}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Users className="h-4 w-4" />
-                    <span>{students.length} estudiantes</span>
-                  </div>
-                </div>
-              </CardContent>
-            )}
-          </Card>
-        )}
-
-        {/* Colony Stats */}
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 mb-8">
+        {/* Colony Stats - REORGANIZADO */}
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 mb-8">
+          {/* Card 1: Total Estudiantes */}
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">Total Estudiantes</CardTitle>
+              <Users className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{students.length}</div>
               <p className="text-xs text-muted-foreground">
-                Registrados en la colonia
+                {currentPeriodData ? `Período ${selectedPeriod}` : 'Registrados en la colonia'}
               </p>
             </CardContent>
           </Card>
+
+          {/* Card 2: NUEVA - Selector de Período */}
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Período Activo</CardTitle>
+              <Calendar className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              {periods.length > 0 ? (
+                <div className="space-y-2">
+                  <Select value={selectedPeriod.toString()} onValueChange={handlePeriodChange}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Seleccionar período" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {periods.map((period) => (
+                        <SelectItem key={period.id} value={period.period_number.toString()}>
+                          <div className="flex flex-col items-start">
+                            <span className="font-medium">
+                              Período {period.period_number}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              {period.season_desc || formatPeriodoSimple(period.periodo_desde, period.periodo_hasta)}
+                            </span>
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {currentPeriodData && (
+                    <p className="text-xs text-muted-foreground">
+                      {formatPeriodoSimple(currentPeriodData.periodo_desde, currentPeriodData.periodo_hasta)}
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div className="text-center">
+                  <p className="text-sm text-muted-foreground">Sin períodos</p>
+                  <p className="text-xs text-muted-foreground">Carga el primer período</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
           
-          {/* ✅ MODIFICAR: Cuadro de acciones mejorado */}
+          {/* Card 3: Acciones */}
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">Acciones</CardTitle>
+              <FileSpreadsheet className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent className="space-y-2">
-              {/* ✅ BOTÓN MEJORADO: Cargar Nuevo Período */}
+              {/* Botón: Importar Excel / Nuevo Período */}
               <Button 
-                onClick={openNewPeriodImport}
+                onClick={handleImportAction}
                 variant="outline"
-                className="w-full bg-white text-gray-900 border border-gray-300 hover:bg-gray-50"
+                size="sm"
+                className="w-full"
               >
                 <Plus className="h-4 w-4 mr-2" />
-                {periods.length === 0 ? 'Cargar Excel (Primer Período)' : 'Cargar Nuevo Período'}
+                {periods.length === 0 ? 'Importar Excel' : 'Nuevo Período'}
               </Button>
               
-              {/* ✅ BOTÓN: Editar período actual (opcional) */}
-              {currentPeriodData && (
+              {/* Botón: Exportar Reporte - Solo si hay datos */}
+              {periods.length > 0 && (
                 <Button 
-                  onClick={() => setShowNewPeriodModal(true)}
-                  variant="outline"
+                  onClick={exportFullReport} 
+                  size="sm"
                   className="w-full"
+                  disabled={students.length === 0 || !reportData.length || !periodDates.length}
                 >
-                  <Edit className="h-4 w-4 mr-2" />
-                  Editar Período Actual
+                  <FileDown className="h-4 w-4 mr-2" />
+                  Exportar Reporte
                 </Button>
               )}
-              
-              {/* ✅ BOTÓN EXPORTAR: Siempre visible pero grisado si no hay estudiantes */}
-              <Button 
-                onClick={exportFullReport} 
-                className="w-full"
-                disabled={students.length === 0 || !reportData.length || !periodDates.length}
-              >
-                <FileDown className="h-4 w-4 mr-2" />
-                Exportar Reporte
-              </Button>
             </CardContent>
           </Card>
         </div>
@@ -1485,44 +1564,18 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
         </Tabs>
       </main>
 
-      {/* ✅ NUEVO: Modal para crear nuevo período con el mismo estilo */}
+      {/* ✅ MODAL MEJORADO: Crear nuevo período con fechas obligatorias */}
       <Dialog open={showNewPeriodModal} onOpenChange={setShowNewPeriodModal}>
-        <DialogContent>
+        <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Crear Nuevo Período</DialogTitle>
+            <DialogTitle>Configurar Nuevo Período</DialogTitle>
             <DialogDescription>
-              Crea un nuevo período para la {colony?.name}
+              Define las fechas del nuevo período antes de importar estudiantes
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
-              <Label htmlFor="name">Nombre de la Colonia *</Label>
-              <Input
-                id="name"
-                value={newPeriodData.name}
-                disabled
-                className="bg-gray-100 text-gray-500"
-                placeholder="Ej: Colonia A"
-              />
-              <p className="text-xs text-muted-foreground">
-                El nombre no se puede cambiar
-              </p>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="code">Código de la Colonia (Opcional)</Label>
-              <Input
-                id="code"
-                value={newPeriodData.colony_code}
-                disabled
-                className="bg-gray-100 text-gray-500"
-                placeholder="Ej: COL-001, A-2024, etc."
-              />
-              <p className="text-xs text-muted-foreground">
-                El código no se puede cambiar
-              </p>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="periodo">Período *</Label>
+              <Label htmlFor="periodo">Fechas del Período *</Label>
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <Label htmlFor="periodo_desde" className="text-xs">Desde</Label>
@@ -1552,25 +1605,22 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
               )}
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="season">Temporada (Opcional)</Label>
+              <Label htmlFor="season">Nombre del Período (Opcional)</Label>
               <Input
                 id="season"
                 value={newPeriodData.season_desc}
                 onChange={(e) => setNewPeriodData({...newPeriodData, season_desc: e.target.value})}
                 placeholder="Ej: Verano 2025, Invierno 2026, etc."
               />
-              <p className="text-xs text-muted-foreground">
-                Identifica la temporada o período específico de la colonia
-              </p>
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="description">Descripción</Label>
+              <Label htmlFor="description">Descripción (Opcional)</Label>
               <Textarea
                 id="description"
                 value={newPeriodData.description}
                 onChange={(e) => setNewPeriodData({...newPeriodData, description: e.target.value})}
-                placeholder="Descripción opcional de la colonia"
-                rows={3}
+                placeholder="Descripción del período"
+                rows={2}
               />
             </div>
           </div>
@@ -1578,8 +1628,11 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
             <Button variant="outline" onClick={() => setShowNewPeriodModal(false)}>
               Cancelar
             </Button>
-            <Button onClick={createNewPeriod}>
-              Crear Nuevo Período
+            <Button 
+              onClick={createNewPeriod}
+              disabled={isCreatingPeriod || !newPeriodData.periodo_desde || !newPeriodData.periodo_hasta}
+            >
+              {isCreatingPeriod ? 'Creando...' : 'Crear y Continuar'}
             </Button>
           </DialogFooter>
         </DialogContent>

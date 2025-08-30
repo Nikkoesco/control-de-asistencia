@@ -49,6 +49,29 @@ const COLUMN_MAPPINGS = {
   'section': 'section'
 }
 
+// ✅ FUNCIÓN HELPER: Formatear fechas de período
+const formatPeriodoSimple = (desde: string, hasta: string) => {
+  try {
+    // ✅ Procesar fechas directamente sin Date object
+    const formatDate = (dateString: string) => {
+      if (!dateString) return 'N/A'
+      
+      const [year, month, day] = dateString.split('-')
+      if (!year || !month || !day) return 'N/A'
+      
+      return `${day}/${month}/${year}`
+    }
+    
+    const desdeFormatted = formatDate(desde)
+    const hastaFormatted = formatDate(hasta)
+    
+    return `${desdeFormatted} - ${hastaFormatted}`
+  } catch (error) {
+    console.error('Error en formatPeriodoSimple:', error)
+    return `${desde} - ${hasta}`
+  }
+}
+
 export default function ImportExcelPage() {
   const [colony, setColony] = useState<any>(null)
   const [loading, setLoading] = useState(true)
@@ -73,7 +96,10 @@ export default function ImportExcelPage() {
   const [availablePeriods, setAvailablePeriods] = useState<any[]>([])
   const [isCreatingNewPeriod, setIsCreatingNewPeriod] = useState(false)
   
-  // ✅ FUNCIÓN: Cargar períodos disponibles
+  // ✅ AGREGAR: Estado para datos del período actual
+  const [currentPeriodData, setCurrentPeriodData] = useState<any>(null)
+  
+  // ✅ FUNCIÓN MEJORADA: Cargar períodos disponibles
   const fetchAvailablePeriods = async () => {
     try {
       const { data, error } = await supabase
@@ -89,14 +115,32 @@ export default function ImportExcelPage() {
       const urlParams = new URLSearchParams(window.location.search)
       const periodParam = urlParams.get('period')
       if (periodParam) {
-        setSelectedPeriod(parseInt(periodParam))
+        const periodNumber = parseInt(periodParam)
+        setSelectedPeriod(periodNumber)
+        
+        // ✅ ESTABLECER: Datos del período seleccionado
+        const periodData = data?.find(p => p.period_number === periodNumber)
+        setCurrentPeriodData(periodData || null)
+        
       } else if (data && data.length > 0) {
         // Seleccionar el período más reciente por defecto
-        setSelectedPeriod(data[data.length - 1].period_number)
+        const latestPeriod = data[data.length - 1]
+        setSelectedPeriod(latestPeriod.period_number)
+        setCurrentPeriodData(latestPeriod)
       }
     } catch (error) {
       console.error('Error loading periods:', error)
     }
+  }
+
+  // ✅ FUNCIÓN: Manejar cambio de período seleccionado
+  const handlePeriodChange = (periodNumber: string) => {
+    const periodNum = parseInt(periodNumber)
+    setSelectedPeriod(periodNum)
+    
+    // ✅ ACTUALIZAR: Datos del período seleccionado
+    const periodData = availablePeriods.find(p => p.period_number === periodNum)
+    setCurrentPeriodData(periodData || null)
   }
 
   // ✅ FUNCIÓN: Crear nuevo período rápido
@@ -619,7 +663,7 @@ export default function ImportExcelPage() {
                 <Label>Período Destino</Label>
                 <Select 
                   value={selectedPeriod?.toString() || ""} 
-                  onValueChange={(value) => setSelectedPeriod(parseInt(value))}
+                  onValueChange={handlePeriodChange} // ✅ AGREGAR esta línea
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Seleccionar período" />

@@ -1,23 +1,23 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Calendar, Users, FileSpreadsheet, ArrowLeft, Plus, CheckCircle, XCircle, Clock, FileText, Loader2, Edit, Trash2, FileDown } from "lucide-react"
+import { Calendar, Users, FileSpreadsheet, ArrowLeft, Plus, CheckCircle, XCircle, Clock, FileText, Loader2, Edit, Trash2, FileDown, Upload } from "lucide-react"
 import { useRouter, useParams } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "@/hooks/use-toast"
 import { use } from 'react'
-// ✅ REMOVIDO: Import de ExcelJS
-// import * as ExcelJS from 'exceljs'
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Checkbox } from "@/components/ui/checkbox"
+import * as XLSX from 'xlsx'
 
 interface Student {
   id: string
@@ -46,6 +46,41 @@ interface Colony {
   created_at: string
   student_count: number
   period_count: number  // ✅ NUEVO: contador de períodos desde colony_periods
+}
+
+interface ExcelRow {
+  [key: string]: any
+}
+
+interface ExcelColumn {
+  name: string
+  index: number
+  selected: boolean
+  mappedTo: string
+}
+
+const COLUMN_MAPPINGS = {
+  'nombre': 'name',
+  'name': 'name',
+  'apellido': 'last_name',
+  'last_name': 'last_name',
+  'lastname': 'last_name',
+  'id': 'student_id',
+  'student_id': 'student_id',
+  'identificacion': 'student_id',
+  'identificacion_estudiante': 'student_id',
+  'colonia': 'colony_id',
+  'colony': 'colony_id',
+  'id_colonia': 'colony_id',
+  'temporada': 'season',
+  'season': 'season',
+  'periodo': 'season',
+  'año': 'season',
+  'email': 'email',
+  'correo': 'email',
+  'grado': 'grade',
+  'grade': 'grade',
+  'section': 'section'
 }
 
 export default function ColonyPage({ params }: { params: Promise<{ id: string }> }) {
@@ -84,6 +119,18 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
   const [selectedPeriod, setSelectedPeriod] = useState<number>(1)
   const [periods, setPeriods] = useState<any[]>([])
   const [currentPeriodData, setCurrentPeriodData] = useState<any>(null)
+
+  // ✅ RESTAURAR ESTADOS: Para manejo de Excel en el modal de período
+  const [periodExcelFile, setPeriodExcelFile] = useState<File | null>(null)
+  const [periodExcelData, setPeriodExcelData] = useState<ExcelRow[]>([])
+  const [periodExcelColumns, setPeriodExcelColumns] = useState<ExcelColumn[]>([])
+  const [periodExcelPreview, setPeriodExcelPreview] = useState<ExcelRow[]>([])
+  const [periodExcelStep, setPeriodExcelStep] = useState<'upload' | 'columns' | 'preview'>('upload')
+  const [processingPeriodExcel, setProcessingPeriodExcel] = useState(false)
+  const [showPeriodColumnMappingModal, setShowPeriodColumnMappingModal] = useState(false)
+  const [tempPeriodExcelColumns, setTempPeriodExcelColumns] = useState<ExcelColumn[]>([])
+
+  const periodFileInputRef = useRef<HTMLInputElement>(null)
 
   const supabase = createClient()
   const router = useRouter()
@@ -1079,12 +1126,107 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
     }
   }
 
-  // ✅ FUNCIÓN CORREGIDA: Crear nuevo período desde modal
-  const createNewPeriod = async () => {
-    if (!newPeriodData.periodo_desde || !newPeriodData.periodo_hasta) {
+  // ✅ RESTAURAR FUNCIÓN: Validar formulario de nuevo período
+  const isPeriodFormValid = () => {
+    return (
+      newPeriodData.periodo_desde.trim() !== "" &&
+      newPeriodData.periodo_hasta.trim() !== "" &&
+      periodExcelData.length > 0
+    )
+  }
+
+  // ✅ RESTAURAR FUNCIÓN: Manejar carga de archivo Excel para período
+  const handlePeriodExcelUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    setPeriodExcelFile(file)
+    setProcessingPeriodExcel(true)
+
+    try {
+      const arrayBuffer = await file.arrayBuffer()
+      const workbook = XLSX.read(arrayBuffer, { type: 'array' })
+      const sheetName = workbook.SheetNames[0]
+      const worksheet = workbook.Sheets[sheetName]
+      
+      const jsonData = XLSX.utils.sheet_to_json(worksheet, { 
+        header: 1, 
+        defval: '',
+        raw: false
+      })
+
+      if (jsonData.length < 2) {
+        throw new Error('El archivo debe tener al menos una fila de encabezados y una fila de datos')
+      }
+
+      const headers = jsonData[0] as string[]
+      const allRows = jsonData.slice(1) as any[][]
+      const validRows = allRows.filter(row => {
+        return row && row.some(cell => cell && cell.toString().trim() !== '')
+      })
+
+      if (validRows.length === 0) {
+        throw new Error('No se encontraron filas con datos válidos en el Excel')
+      }
+
+      // Crear estructura de columnas
+      const columns: ExcelColumn[] = headers.map((header, index) => ({
+        name: header,
+        index,
+        selected: true,
+        mappedTo: COLUMN_MAPPINGS[header.toLowerCase()] || 'unmapped'
+      }))
+
+      // Convertir filas válidas a objetos
+      const data: ExcelRow[] = validRows.map(row => {
+        const obj: ExcelRow = {}
+        headers.forEach((header, index) => {
+          obj[header] = row[index] || ''
+        })
+        return obj
+      })
+
+      setPeriodExcelData(data)
+      setPeriodExcelColumns(columns)
+      setPeriodExcelPreview(data.slice(0, 5))
+      setTempPeriodExcelColumns([...columns])
+      setPeriodExcelStep('preview')
+
+      toast({
+        title: "Archivo cargado",
+        description: `Se encontraron ${data.length} estudiantes válidos`,
+      })
+
+    } catch (error) {
+      console.error('Error reading Excel file:', error)
       toast({
         title: "Error",
-        description: "Las fechas del período son obligatorias",
+        description: error instanceof Error ? error.message : "No se pudo leer el archivo Excel",
+        variant: "destructive"
+      })
+    } finally {
+      setProcessingPeriodExcel(false)
+    }
+  }
+
+  // ✅ RESTAURAR FUNCIÓN: Aplicar mapeo de columnas para período
+  const applyPeriodColumnMapping = () => {
+    setPeriodExcelColumns([...tempPeriodExcelColumns])
+    setShowPeriodColumnMappingModal(false)
+    
+    // Actualizar preview con las columnas seleccionadas
+    const selectedColumns = tempPeriodExcelColumns.filter(col => col.selected)
+    if (selectedColumns.length > 0) {
+      setPeriodExcelPreview(periodExcelData.slice(0, 5))
+    }
+  }
+
+  // ✅ FUNCIÓN MODIFICADA: Crear nuevo período con estudiantes de Excel
+  const createNewPeriod = async () => {
+    if (!isPeriodFormValid()) {
+      toast({
+        title: "Error",
+        description: "Complete las fechas del período y cargue el archivo Excel",
         variant: "destructive"
       })
       return
@@ -1092,40 +1234,82 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
 
     try {
       setIsCreatingPeriod(true)
-      
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) throw new Error("Usuario no autenticado")
 
-      // Obtener el próximo número de período
+      // Validar autenticación
+      const { data: { user }, error: authError } = await supabase.auth.getUser()
+      if (authError || !user) {
+        throw new Error("Usuario no autenticado")
+      }
+
+      // Obtener el siguiente número de período
       const nextPeriodNumber = periods.length > 0 
         ? Math.max(...periods.map(p => p.period_number)) + 1 
         : 1
-      
+
       console.log(`🔄 Creando período número ${nextPeriodNumber}`)
-      
-      // Crear nuevo período con datos del modal
-      const { data, error } = await supabase
+
+      // PASO 1: Crear el período
+      const { data: periodData, error: periodError } = await supabase
         .from('colony_periods')
         .insert({
           colony_id: colonyId,
           period_number: nextPeriodNumber,
           periodo_desde: newPeriodData.periodo_desde,
           periodo_hasta: newPeriodData.periodo_hasta,
-          season_desc: newPeriodData.season_desc || `Período ${nextPeriodNumber}`,
-          description: newPeriodData.description || `Período ${nextPeriodNumber}`,
+          season_desc: newPeriodData.season_desc.trim() || `Período ${nextPeriodNumber}`,
+          description: newPeriodData.description.trim(),
           created_by: user.id
         })
         .select()
         .single()
 
-      if (error) throw error
+      if (periodError) {
+        throw new Error(`Error creando período: ${periodError.message}`)
+      }
 
-      toast({
-        title: "Éxito",
-        description: `Período ${nextPeriodNumber} creado correctamente`,
+      // PASO 2: Procesar y crear estudiantes
+      const selectedColumns = periodExcelColumns.filter(col => col.selected)
+      const studentsToInsert = periodExcelData.map(row => {
+        const student: any = {
+          colony_id: colonyId,
+          period_number: nextPeriodNumber,
+          created_by: user.id,
+          // ✅ AGREGAR: Campo season obligatorio
+          season: newPeriodData.season_desc.trim() || `Período ${nextPeriodNumber}`
+        }
+
+        selectedColumns.forEach(col => {
+          const value = row[col.name]
+          if (value && col.mappedTo !== 'unmapped') {
+            student[col.mappedTo] = value.toString().trim()
+          }
+        })
+
+        // Validaciones básicas
+        if (!student.name) {
+          student.name = 'Sin nombre'
+        }
+        if (!student.student_id) {
+          student.student_id = `AUTO_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+        }
+
+        return student
       })
 
-      setShowNewPeriodModal(false)
+      // Insertar estudiantes en lotes
+      const batchSize = 100
+      for (let i = 0; i < studentsToInsert.length; i += batchSize) {
+        const batch = studentsToInsert.slice(i, i + batchSize)
+        const { error: studentsError } = await supabase
+          .from('students')
+          .insert(batch)
+
+        if (studentsError) {
+          throw new Error(`Error insertando estudiantes (lote ${Math.floor(i/batchSize) + 1}): ${studentsError.message}`)
+        }
+      }
+
+      // PASO 3: Limpiar formulario y cerrar modal
       setNewPeriodData({
         name: '',
         description: '',
@@ -1134,18 +1318,26 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
         periodo_hasta: '',
         season_desc: ''
       })
+      setPeriodExcelFile(null)
+      setPeriodExcelData([])
+      setPeriodExcelColumns([])
+      setPeriodExcelPreview([])
+      setPeriodExcelStep('upload')
+      setShowNewPeriodModal(false)
 
-      // Actualizar lista de períodos
+      // PASO 4: Recargar datos
       await fetchPeriods()
-      
-      // Ir a la página de importación con el nuevo período
-      router.push(`/colonies/${colonyId}/import?period=${nextPeriodNumber}`)
-      
+
+      toast({
+        title: "¡Período creado exitosamente!",
+        description: `Se creó el período ${nextPeriodNumber} con ${studentsToInsert.length} estudiantes`,
+      })
+
     } catch (error) {
-      console.error('Error creating new period:', error)
+      console.error('Error creando período:', error)
       toast({
         title: "Error",
-        description: "No se pudo crear el nuevo período",
+        description: error instanceof Error ? error.message : "No se pudo crear el período",
         variant: "destructive"
       })
     } finally {
@@ -1238,18 +1430,16 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
                               Período {period.period_number}
                             </span>
                             <span className="text-xs text-muted-foreground">
-                              {period.season_desc || formatPeriodoSimple(period.periodo_desde, period.periodo_hasta)}
+                              {period.season_desc 
+                                ? `${period.season_desc} - ${formatPeriodoSimple(period.periodo_desde, period.periodo_hasta)}`
+                                : formatPeriodoSimple(period.periodo_desde, period.periodo_hasta)
+                              }
                             </span>
                           </div>
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
-                  {currentPeriodData && (
-                    <p className="text-xs text-muted-foreground">
-                      {formatPeriodoSimple(currentPeriodData.periodo_desde, currentPeriodData.periodo_hasta)}
-                    </p>
-                  )}
                 </div>
               ) : (
                 <div className="text-center">
@@ -1564,75 +1754,285 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
         </Tabs>
       </main>
 
-      {/* ✅ MODAL MEJORADO: Crear nuevo período con fechas obligatorias */}
+      {/* ✅ MODAL RESTAURADO: Crear nuevo período con Excel */}
       <Dialog open={showNewPeriodModal} onOpenChange={setShowNewPeriodModal}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Configurar Nuevo Período</DialogTitle>
             <DialogDescription>
-              Define las fechas del nuevo período antes de importar estudiantes
+              Define las fechas del nuevo período y carga el archivo Excel con los estudiantes
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4 py-4">
-            <div className="grid gap-2">
-              <Label htmlFor="periodo">Fechas del Período *</Label>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <Label htmlFor="periodo_desde" className="text-xs">Desde</Label>
+          
+          <div className="grid gap-6 py-4">
+            {/* SECCIÓN 1: Información del período */}
+            <div className="space-y-4">
+              <h3 className="text-lg font-semibold">Información del Período</h3>
+              
+              <div className="grid gap-2">
+                <Label htmlFor="periodo">Fechas del Período</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label htmlFor="periodo_desde" className="text-xs">Desde</Label>
+                    <Input
+                      id="periodo_desde"
+                      type="date"
+                      value={newPeriodData.periodo_desde}
+                      onChange={(e) => setNewPeriodData({...newPeriodData, periodo_desde: e.target.value})}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="periodo_hasta" className="text-xs">Hasta</Label>
+                    <Input
+                      id="periodo_hasta"
+                      type="date"
+                      value={newPeriodData.periodo_hasta}
+                      onChange={(e) => setNewPeriodData({...newPeriodData, periodo_hasta: e.target.value})}
+                      required
+                    />
+                  </div>
+                </div>
+                {newPeriodData.periodo_desde && newPeriodData.periodo_hasta && (
+                  <p className="text-xs text-muted-foreground">
+                    Duración: {calculateDays(newPeriodData.periodo_desde, newPeriodData.periodo_hasta)} días
+                  </p>
+                )}
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="grid gap-2">
+                  <Label htmlFor="season">Temporada</Label>
                   <Input
-                    id="periodo_desde"
-                    type="date"
-                    value={newPeriodData.periodo_desde}
-                    onChange={(e) => setNewPeriodData({...newPeriodData, periodo_desde: e.target.value})}
-                    required
+                    id="season"
+                    value={newPeriodData.season_desc}
+                    onChange={(e) => setNewPeriodData({...newPeriodData, season_desc: e.target.value})}
+                    placeholder="Ej: Verano 2025, Invierno 2026, etc."
                   />
                 </div>
-                <div>
-                  <Label htmlFor="periodo_hasta" className="text-xs">Hasta</Label>
+                <div className="grid gap-2">
+                  <Label htmlFor="description">Descripción (Opcional)</Label>
                   <Input
-                    id="periodo_hasta"
-                    type="date"
-                    value={newPeriodData.periodo_hasta}
-                    onChange={(e) => setNewPeriodData({...newPeriodData, periodo_hasta: e.target.value})}
-                    required
+                    id="description"
+                    value={newPeriodData.description}
+                    onChange={(e) => setNewPeriodData({...newPeriodData, description: e.target.value})}
+                    placeholder="Descripción del período"
                   />
                 </div>
               </div>
-              {newPeriodData.periodo_desde && newPeriodData.periodo_hasta && (
-                <p className="text-xs text-muted-foreground">
-                  Duración: {calculateDays(newPeriodData.periodo_desde, newPeriodData.periodo_hasta)} días
-                </p>
+            </div>
+
+            {/* SECCIÓN 2: Carga de Excel */}
+            <div className="space-y-4 border-t pt-4">
+              <h3 className="text-lg font-semibold">Archivo de Estudiantes</h3>
+              
+              {periodExcelStep === 'upload' && (
+                <div className="space-y-4">
+                  <div className="border-2 border-dashed border-muted-foreground/25 rounded-lg p-8 text-center">
+                    <input
+                      ref={periodFileInputRef}
+                      type="file"
+                      accept=".xlsx,.xls"
+                      onChange={handlePeriodExcelUpload}
+                      className="hidden"
+                    />
+                    <Upload className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                    <h3 className="text-lg font-semibold mb-2">Cargar archivo Excel</h3>
+                    <p className="text-muted-foreground mb-4">
+                      Selecciona un archivo .xlsx o .xls con los datos de los estudiantes
+                    </p>
+                    <Button 
+                      onClick={() => periodFileInputRef.current?.click()}
+                      disabled={processingPeriodExcel}
+                    >
+                      {processingPeriodExcel ? 'Procesando...' : 'Seleccionar Archivo'}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {periodExcelStep === 'preview' && periodExcelPreview.length > 0 && (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-medium">✅ Archivo cargado ({periodExcelData.length} estudiantes válidos)</h4>
+                    <div className="space-x-2">
+                      <Button 
+                        variant="outline" 
+                        size="sm"
+                        onClick={() => setShowPeriodColumnMappingModal(true)}
+                      >
+                        Editar Mapeo
+                      </Button>
+                      <Button 
+                        variant="outline" 
+                        size="sm"
+                        onClick={() => {
+                          setPeriodExcelStep('upload')
+                          setPeriodExcelFile(null)
+                          setPeriodExcelData([])
+                          setPeriodExcelColumns([])
+                        }}
+                      >
+                        Cambiar Archivo
+                      </Button>
+                    </div>
+                  </div>
+                  
+                  <div className="border rounded-lg overflow-hidden">
+                    <div className="overflow-x-auto max-h-40">
+                      <table className="w-full text-sm">
+                        <thead className="bg-muted">
+                          <tr>
+                            {periodExcelColumns.filter(col => col.selected).map((col, index) => (
+                              <th key={index} className="p-2 text-left font-medium">
+                                {col.name} → {col.mappedTo}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {periodExcelPreview.map((row, rowIndex) => (
+                            <tr key={rowIndex} className="border-t">
+                              {periodExcelColumns.filter(col => col.selected).map((col, colIndex) => (
+                                <td key={colIndex} className="p-2">
+                                  {row[col.name] || '-'}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="season">Nombre del Período (Opcional)</Label>
-              <Input
-                id="season"
-                value={newPeriodData.season_desc}
-                onChange={(e) => setNewPeriodData({...newPeriodData, season_desc: e.target.value})}
-                placeholder="Ej: Verano 2025, Invierno 2026, etc."
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="description">Descripción (Opcional)</Label>
-              <Textarea
-                id="description"
-                value={newPeriodData.description}
-                onChange={(e) => setNewPeriodData({...newPeriodData, description: e.target.value})}
-                placeholder="Descripción del período"
-                rows={2}
-              />
-            </div>
           </div>
+
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowNewPeriodModal(false)}>
               Cancelar
             </Button>
             <Button 
               onClick={createNewPeriod}
-              disabled={isCreatingPeriod || !newPeriodData.periodo_desde || !newPeriodData.periodo_hasta}
+              disabled={isCreatingPeriod || !isPeriodFormValid()}
             >
-              {isCreatingPeriod ? 'Creando...' : 'Crear y Continuar'}
+              {isCreatingPeriod ? 'Creando...' : 'Crear Período e Importar'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ✅ MODAL RESTAURADO: Para mapeo de columnas del período */}
+      <Dialog open={showPeriodColumnMappingModal} onOpenChange={setShowPeriodColumnMappingModal}>
+        <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Mapear Columnas del Excel</DialogTitle>
+            <DialogDescription>
+              Selecciona qué columnas importar y cómo mapearlas a los campos del sistema
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="py-4">
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h4 className="font-medium">Columnas encontradas: {tempPeriodExcelColumns.length}</h4>
+                <div className="space-x-2">
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={() => {
+                      const newColumns = tempPeriodExcelColumns.map(col => ({ ...col, selected: true }))
+                      setTempPeriodExcelColumns(newColumns)
+                    }}
+                  >
+                    Seleccionar Todas
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={() => {
+                      const newColumns = tempPeriodExcelColumns.map(col => ({ ...col, selected: false }))
+                      setTempPeriodExcelColumns(newColumns)
+                    }}
+                  >
+                    Deseleccionar Todas
+                  </Button>
+                </div>
+              </div>
+            
+              <div className="border rounded-lg overflow-hidden">
+                <div className="max-h-96 overflow-y-auto">
+                  <table className="w-full">
+                    <thead className="bg-muted sticky top-0">
+                      <tr>
+                        <th className="p-3 text-left font-medium w-16">Usar</th>
+                        <th className="p-3 text-left font-medium">Columna del Excel</th>
+                        <th className="p-3 text-left font-medium">Datos de Ejemplo</th>
+                        <th className="p-3 text-left font-medium w-48">Mapear a Campo</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tempPeriodExcelColumns.map((column, index) => (
+                        <tr key={index} className="border-t hover:bg-muted/50">
+                          <td className="p-3">
+                            <Checkbox
+                              checked={column.selected}
+                              onCheckedChange={(checked) => {
+                                const newColumns = [...tempPeriodExcelColumns]
+                                newColumns[index].selected = checked as boolean
+                                setTempPeriodExcelColumns(newColumns)
+                              }}
+                            />
+                          </td>
+                          <td className="p-3">
+                            <span className="font-medium">{column.name}</span>
+                          </td>
+                          <td className="p-3 text-sm text-muted-foreground">
+                            {periodExcelPreview.slice(0, 3).map((row, rowIndex) => (
+                              <div key={rowIndex} className="truncate max-w-32">
+                                {row[column.name] || '-'}
+                              </div>
+                            ))}
+                          </td>
+                          <td className="p-3">
+                            <Select
+                              value={column.mappedTo}
+                              onValueChange={(value) => {
+                                const newColumns = [...tempPeriodExcelColumns]
+                                newColumns[index].mappedTo = value
+                                setTempPeriodExcelColumns(newColumns)
+                              }}
+                            >
+                              <SelectTrigger className="w-full">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="unmapped">No mapear</SelectItem>
+                                <SelectItem value="name">Nombre</SelectItem>
+                                <SelectItem value="last_name">Apellido</SelectItem>
+                                <SelectItem value="student_id">ID Estudiante</SelectItem>
+                                <SelectItem value="email">Email</SelectItem>
+                                <SelectItem value="grade">Grado</SelectItem>
+                                <SelectItem value="section">Sección</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowPeriodColumnMappingModal(false)}>
+              Cancelar
+            </Button>
+            <Button onClick={applyPeriodColumnMapping}>
+              Aplicar Mapeo
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
-import { Plus, Users, Calendar, FileSpreadsheet, Eye, Trash2, Upload } from "lucide-react"
+import { Plus, Users, Calendar, FileSpreadsheet, Eye, Trash2, Upload, Edit, Eraser } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 import { toast } from "@/hooks/use-toast"
@@ -93,6 +93,20 @@ export default function ColoniesPage() {
   // ✅ NUEVOS ESTADOS: Para el modal de mapeo de columnas
   const [showColumnMappingModal, setShowColumnMappingModal] = useState(false)
   const [tempExcelColumns, setTempExcelColumns] = useState<ExcelColumn[]>([])
+
+  // ✅ NUEVOS ESTADOS para editar colonia
+  const [showEditColonyModal, setShowEditColonyModal] = useState(false)
+  const [showDeleteDataModal, setShowDeleteDataModal] = useState(false)
+  const [colonyToEdit, setColonyToEdit] = useState<Colony | null>(null)
+  const [colonyToDeleteData, setColonyToDeleteData] = useState<Colony | null>(null)
+  const [editColonyData, setEditColonyData] = useState({
+    name: '',
+    colony_code: '',
+    description: '',
+    season_desc: ''
+  })
+  const [isUpdatingColony, setIsUpdatingColony] = useState(false)
+  const [isDeletingData, setIsDeletingData] = useState(false)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const supabase = createClient()
@@ -679,6 +693,173 @@ export default function ColoniesPage() {
     }
   }
 
+  // ✅ NUEVA FUNCIÓN: Abrir modal para editar colonia
+  const openEditColonyModal = (colony: Colony) => {
+    setColonyToEdit(colony)
+    setEditColonyData({
+      name: colony.name || '',
+      colony_code: colony.colony_code || '',
+      description: colony.description || '',
+      season_desc: colony.period_dates?.[0]?.season_desc || ''
+    })
+    setShowEditColonyModal(true)
+  }
+
+  // ✅ NUEVA FUNCIÓN: Actualizar colonia
+  const updateColony = async () => {
+    if (!colonyToEdit) return
+
+    try {
+      setIsUpdatingColony(true)
+
+      // Validar campos obligatorios
+      if (!editColonyData.name.trim() || !editColonyData.colony_code.trim()) {
+        throw new Error("El nombre y código de la colonia son obligatorios")
+      }
+
+      // Actualizar colonia en la base de datos
+      const { error: colonyError } = await supabase
+        .from('colonies')
+        .update({
+          name: editColonyData.name.trim(),
+          colony_code: editColonyData.colony_code.trim(),
+          description: editColonyData.description.trim(),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', colonyToEdit.id)
+
+      if (colonyError) throw colonyError
+
+      // ✅ CORREGIDO: Si hay descripción de temporada, actualizar el primer período Y los estudiantes
+      if (editColonyData.season_desc.trim() && colonyToEdit.period_dates?.length > 0) {
+        // Actualizar descripción del período (SIN updated_at porque no existe esa columna)
+        const { error: periodError } = await supabase
+          .from('colony_periods')
+          .update({
+            season_desc: editColonyData.season_desc.trim()
+            // ❌ QUITAR: updated_at: new Date().toISOString()
+          })
+          .eq('colony_id', colonyToEdit.id)
+          .eq('period_number', 1)
+
+        if (periodError) {
+          console.warn('Error actualizando descripción del período:', periodError)
+          toast({
+            title: "Error",
+            description: `Error actualizando período: ${periodError.message}`,
+            variant: "destructive"
+          })
+          return // ✅ Salir si hay error en el período principal
+        }
+
+        // ✅ NUEVO: Actualizar la temporada de todos los estudiantes de esta colonia
+        const { error: studentsError } = await supabase
+          .from('students')
+          .update({
+            season: editColonyData.season_desc.trim(),
+            updated_at: new Date().toISOString() // ✅ Esta columna SÍ existe en students
+          })
+          .eq('colony_id', colonyToEdit.id)
+
+        if (studentsError) {
+          console.warn('Error actualizando temporada de estudiantes:', studentsError)
+          toast({
+            title: "Advertencia",
+            description: "La colonia se actualizó pero no se pudo actualizar la temporada de los estudiantes",
+            variant: "destructive"
+          })
+        } else {
+          console.log('✅ Temporada de estudiantes actualizada correctamente')
+        }
+      }
+
+      // Recargar colonias
+      await fetchColonies()
+
+      // Cerrar modal
+      setShowEditColonyModal(false)
+      setColonyToEdit(null)
+
+      toast({
+        title: "¡Colonia actualizada!",
+        description: "Los cambios se guardaron correctamente",
+      })
+
+    } catch (error) {
+      console.error('Error actualizando colonia:', error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "No se pudo actualizar la colonia",
+        variant: "destructive"
+      })
+    } finally {
+      setIsUpdatingColony(false)
+    }
+  }
+
+  // ✅ NUEVA FUNCIÓN: Abrir modal para borrar datos de colonia
+  const openDeleteDataModal = (colony: Colony) => {
+    setColonyToDeleteData(colony)
+    setShowDeleteDataModal(true)
+  }
+
+  // ✅ NUEVA FUNCIÓN: Borrar todos los datos de la colonia
+  const deleteColonyData = async () => {
+    if (!colonyToDeleteData) return
+
+    try {
+      setIsDeletingData(true)
+
+      // Eliminar registros de asistencia
+      const { error: attendanceError } = await supabase
+        .from('colony_attendance')
+        .delete()
+        .eq('colony_id', colonyToDeleteData.id)
+
+      if (attendanceError) {
+        console.warn('Error eliminando asistencia:', attendanceError)
+      }
+
+      // Eliminar estudiantes
+      const { error: studentsError } = await supabase
+        .from('students')
+        .delete()
+        .eq('colony_id', colonyToDeleteData.id)
+
+      if (studentsError) throw studentsError
+
+      // Eliminar períodos
+      const { error: periodsError } = await supabase
+        .from('colony_periods')
+        .delete()
+        .eq('colony_id', colonyToDeleteData.id)
+
+      if (periodsError) throw periodsError
+
+      // Recargar colonias
+      await fetchColonies()
+
+      // Cerrar modal
+      setShowDeleteDataModal(false)
+      setColonyToDeleteData(null)
+
+      toast({
+        title: "¡Datos eliminados!",
+        description: `Se eliminaron todos los datos de la colonia "${colonyToDeleteData.name}"`,
+      })
+
+    } catch (error) {
+      console.error('Error eliminando datos de colonia:', error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "No se pudieron eliminar los datos",
+        variant: "destructive"
+      })
+    } finally {
+      setIsDeletingData(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
@@ -845,7 +1026,7 @@ export default function ColoniesPage() {
                   
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="grid gap-2">
-                      <Label htmlFor="name">Nombre de la Colonia *</Label>
+                      <Label htmlFor="name">Nombre de la Colonia</Label>
                       <Input
                         id="name"
                         value={newColonyName}
@@ -855,7 +1036,7 @@ export default function ColoniesPage() {
                       />
                     </div>
                     <div className="grid gap-2">
-                      <Label htmlFor="code">Código de la Colonia *</Label>
+                      <Label htmlFor="code">Código de la Colonia</Label>
                       <Input
                         id="code"
                         value={newColonyCode}
@@ -867,10 +1048,10 @@ export default function ColoniesPage() {
                   </div>
 
                   <div className="grid gap-2">
-                    <Label htmlFor="periodo">Período *</Label>
+                    <Label htmlFor="periodo">Período</Label>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <Label htmlFor="periodo_desde" className="text-xs">Desde *</Label>
+                        <Label htmlFor="periodo_desde" className="text-xs">Desde</Label>
                         <Input
                           id="periodo_desde"
                           type="date"
@@ -880,7 +1061,7 @@ export default function ColoniesPage() {
                         />
                       </div>
                       <div>
-                        <Label htmlFor="periodo_hasta" className="text-xs">Hasta *</Label>
+                        <Label htmlFor="periodo_hasta" className="text-xs">Hasta</Label>
                         <Input
                           id="periodo_hasta"
                           type="date"
@@ -899,7 +1080,7 @@ export default function ColoniesPage() {
 
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="grid gap-2">
-                      <Label htmlFor="season">Temporada *</Label>
+                      <Label htmlFor="season">Temporada</Label>
                       <Input
                         id="season"
                         value={newColonySeason}
@@ -909,7 +1090,7 @@ export default function ColoniesPage() {
                       />
                     </div>
                     <div className="grid gap-2">
-                      <Label htmlFor="description">Descripción</Label>
+                      <Label htmlFor="description">Descripción (Opcional)</Label>
                       <Input
                         id="description"
                         value={newColonyDescription}
@@ -1262,14 +1443,24 @@ export default function ColoniesPage() {
                       <Eye className="h-4 w-4 mr-2" />
                       Abrir
                     </Button>
+                    {/* ✅ CAMBIADO: Botón de Excel por Editar */}
                     <Button 
-                      onClick={() => router.push(`/colonies/${colony.id}/import`)} 
+                      onClick={() => openEditColonyModal(colony)} 
                       size="sm"
                       variant="secondary"
                     >
-                      <FileSpreadsheet className="h-4 w-4" />
+                      <Edit className="h-4 w-4" />
                     </Button>
-                    {/* Agregar botón de eliminación */}
+                    {/* ✅ NUEVO: Botón para borrar datos */}
+                    <Button 
+                      onClick={() => openDeleteDataModal(colony)} 
+                      size="sm"
+                      variant="secondary"
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      <Eraser className="h-4 w-4" />
+                    </Button>
+                    {/* Botón de eliminación completa de colonia */}
                     <Button 
                       onClick={() => setColonyToDelete(colony.id)} 
                       size="sm"
@@ -1333,6 +1524,132 @@ export default function ColoniesPage() {
               disabled={isDeleting}
             >
               {isDeleting ? "Eliminando..." : "Eliminar Colonia"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ✅ NUEVO MODAL: Editar Colonia */}
+      <Dialog open={showEditColonyModal} onOpenChange={setShowEditColonyModal}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Editar Colonia</DialogTitle>
+            <DialogDescription>
+              Modifica los datos de la colonia seleccionada
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="edit-name">Nombre de la colonia</Label>
+              <Input
+                id="edit-name"
+                value={editColonyData.name}
+                onChange={(e) => setEditColonyData(prev => ({ ...prev, name: e.target.value }))}
+                placeholder="Nombre de la colonia"
+                required
+              />
+            </div>
+            
+            <div>
+              <Label htmlFor="edit-code">Código de la colonia</Label>
+              <Input
+                id="edit-code"
+                value={editColonyData.colony_code}
+                onChange={(e) => setEditColonyData(prev => ({ ...prev, colony_code: e.target.value }))}
+                placeholder="Código único"
+                required
+              />
+            </div>
+            
+            <div>
+              <Label htmlFor="edit-season">Temporada</Label>
+              <Input
+                id="edit-season"
+                value={editColonyData.season_desc}
+                onChange={(e) => setEditColonyData(prev => ({ ...prev, season_desc: e.target.value }))}
+                placeholder="Ej: Verano 2024"
+              />
+            </div>
+            
+            <div>
+              <Label htmlFor="edit-description">Descripción (Opcional)</Label>
+              <Textarea
+                id="edit-description"
+                value={editColonyData.description}
+                onChange={(e) => setEditColonyData(prev => ({ ...prev, description: e.target.value }))}
+                placeholder="Descripción opcional"
+                rows={3}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => setShowEditColonyModal(false)}
+              disabled={isUpdatingColony}
+            >
+              Cancelar
+            </Button>
+            <Button 
+              onClick={updateColony}
+              disabled={isUpdatingColony}
+            >
+              {isUpdatingColony ? "Guardando..." : "Guardar Cambios"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ✅ NUEVO MODAL: Confirmar Borrado de Datos */}
+      <Dialog open={showDeleteDataModal} onOpenChange={setShowDeleteDataModal}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-orange-600">Borrar Datos de la Colonia</DialogTitle>
+            <DialogDescription>
+              Esta acción eliminará todos los datos de la colonia, pero mantendrá la colonia creada.
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-2 text-sm text-muted-foreground">
+            <div className="flex items-center gap-2">
+              <Trash2 className="h-4 w-4 text-orange-500" />
+              <span>Todos los estudiantes</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Trash2 className="h-4 w-4 text-orange-500" />
+              <span>Todos los períodos</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Trash2 className="h-4 w-4 text-orange-500" />
+              <span>Todos los registros de asistencia</span>
+            </div>
+          </div>
+
+          <div className="bg-orange-50 border border-orange-200 rounded-lg p-3">
+            <p className="text-sm text-orange-800 font-medium">
+              ¿Estás seguro de que quieres borrar todos los datos de "{colonyToDeleteData?.name}"?
+            </p>
+            <p className="text-xs text-orange-700 mt-1">
+              La colonia se mantendrá pero sin datos. Podrás volver a importar estudiantes.
+            </p>
+          </div>
+
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => setShowDeleteDataModal(false)}
+              disabled={isDeletingData}
+            >
+              Cancelar
+            </Button>
+            <Button 
+              variant="destructive"
+              onClick={deleteColonyData}
+              disabled={isDeletingData}
+            >
+              {isDeletingData ? "Borrando..." : "Borrar Datos"}
             </Button>
           </DialogFooter>
         </DialogContent>

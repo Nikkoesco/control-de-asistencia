@@ -1537,7 +1537,13 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
     <div className="min-h-screen bg-background">
       <header className="border-b">
         <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl font-bold">{colony.name}</h1>
+              {colony.description && (
+                <p className="text-muted-foreground">{colony.description}</p>
+              )}
+            </div>
             <Button 
               onClick={() => router.push('/colonies')} 
               variant="outline" 
@@ -1546,12 +1552,6 @@ export default function ColonyPage({ params }: { params: Promise<{ id: string }>
               <ArrowLeft className="h-4 w-4 mr-2" />
               Volver a Colonias
             </Button>
-            <div>
-              <h1 className="text-2xl font-bold">{colony.name}</h1>
-              {colony.description && (
-                <p className="text-muted-foreground">{colony.description}</p>
-              )}
-            </div>
           </div>
         </div>
       </header>
